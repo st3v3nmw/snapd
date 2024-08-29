@@ -778,6 +778,20 @@ func CheckSignature(assert Assertion, signingKey *AccountKey, roDB RODatabase, c
 		if !signingKey.canSign(assert) {
 			return fmt.Errorf("assertion does not match signing constraints for public key %q from %q", assert.SignKeyID(), assert.AuthorityID())
 		}
+	} else if assert.Type() == RegistryControlType {
+		// TODO: find a reasonable way to do this
+		// to check the signature, we're finding the serial assertion that matches the
+		// registry control assertion's signing key
+		serials, err := roDB.FindMany(SerialType, map[string]string{"device-key-sha3-384": assert.SignKeyID()})
+		if err != nil || len(serials) == 0 {
+			return fmt.Errorf("serial assertion with device key %s not found: %v", assert.SignKeyID(), err)
+		}
+
+		devKeyStr := serials[0].HeaderString("device-key")
+		pubKey, err = DecodePublicKey([]byte(devKeyStr))
+		if err != nil {
+			return fmt.Errorf("could not decode the device key")
+		}
 	} else {
 		custom, ok := assert.(customSigner)
 		if !ok {

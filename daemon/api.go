@@ -89,6 +89,7 @@ var api = []*Command{
 	requestsPromptCmd,
 	requestsRulesCmd,
 	requestsRuleCmd,
+	signCmd,
 }
 
 const (

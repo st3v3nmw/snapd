@@ -77,6 +77,8 @@ const (
 	Registries
 	// AppArmorPrompting enables AppArmor to prompt the user for permission when apps perform certain operations.
 	AppArmorPrompting
+	// RegistryControl enables experimental remote management of registries
+	RegistryControl
 
 	// lastFeature is the final known feature, it is only used for testing.
 	lastFeature
@@ -119,7 +121,9 @@ var featureNames = map[SnapdFeature]string{
 	QuotaGroups: "quota-groups",
 
 	RefreshAppAwarenessUX: "refresh-app-awareness-ux",
-	Registries:            "registries",
+
+	Registries:      "registries",
+	RegistryControl: "registry-control",
 
 	AppArmorPrompting: "apparmor-prompting",
 }

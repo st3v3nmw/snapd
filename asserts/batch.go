@@ -200,6 +200,17 @@ func (b *Batch) prereqSort(db *Database) error {
 		return nil
 	}
 
+	if b.added[0].Type() == RegistryControlType {
+		// TODO: find reasonable way to do these checks
+		// we need to check that a matching serial assertion exists
+		// & the serial's device-key-sha3-384 should match this
+		// assertion's sign-key-sha3-384
+
+		// for now, skip pre-req checks for this assertion type
+		b.inPrereqOrder = true
+		return nil
+	}
+
 	// put in prereq order using a fetcher
 	ordered := make([]Assertion, 0, len(b.added))
 	retrieve := func(ref *Ref) (Assertion, error) {

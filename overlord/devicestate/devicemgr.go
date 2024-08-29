@@ -1963,6 +1963,34 @@ func (m *DeviceManager) keyPair() (asserts.PrivateKey, error) {
 	return privKey, nil
 }
 
+// BREAKING ALL THE ABSTRACTIONS!!
+func (m *DeviceManager) KeyMgr() (asserts.KeypairManager, error) {
+	device, err := m.device()
+	if err != nil {
+		return nil, err
+	}
+
+	if device.KeyID == "" {
+		return nil, state.ErrNoState
+	}
+
+	var keypairMgr asserts.KeypairManager
+	err = m.withKeypairMgr(func(mgr asserts.KeypairManager) (err error) {
+		keypairMgr = mgr
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return keypairMgr, nil
+}
+
+// BREAKING ALL THE ABSTRACTIONS!!
+func (m *DeviceManager) KeyID() (string, error) {
+	device, err := m.device()
+	return device.KeyID, err
+}
+
 // Registered returns a channel that is closed when the device is known to have been registered.
 func (m *DeviceManager) Registered() <-chan struct{} {
 	return m.reg
