@@ -40,12 +40,14 @@ of the assertion can be specified through a "body" pseudo-header.
 `)
 
 type cmdSign struct {
+	clientMixin
 	Positional struct {
 		Filename flags.Filename
 	} `positional-args:"yes"`
 
-	KeyName keyName `short:"k" default:"default"`
-	Chain   bool    `long:"chain"`
+	KeyName   keyName `short:"k" default:"default"`
+	Chain     bool    `long:"chain"`
+	DeviceKey bool    `long:"device-key"`
 }
 
 func init() {
@@ -55,7 +57,8 @@ func init() {
 		// TRANSLATORS: This should not start with a lowercase letter.
 		"k": i18n.G("Name of the key to use, otherwise use the default key"),
 		// TRANSLATORS: This should not start with a lowercase letter.
-		"chain": i18n.G("Append the account and account-key assertions necessary to allow any device to validate the signed assertion."),
+		"chain":      i18n.G("Append the account and account-key assertions necessary to allow any device to validate the signed assertion."),
+		"device-key": i18n.G("Sign with the device-key"),
 	}, []argDesc{{
 		// TRANSLATORS: This needs to begin with < and end with >
 		name: i18n.G("<filename>"),
@@ -86,6 +89,14 @@ func (x *cmdSign) Execute(args []string) error {
 		return fmt.Errorf(i18n.G("cannot read assertion input: %v"), err)
 	}
 
+	if !x.DeviceKey {
+		return x.execOld(statement)
+	} else {
+		return x.execDevKey(statement)
+	}
+}
+
+func (x *cmdSign) execOld(statement []byte) error {
 	keypairMgr, err := signtool.GetKeypairManager()
 	if err != nil {
 		return err
@@ -163,4 +174,9 @@ func mustGetOneAssert(assertType string, headers map[string]string) (asserts.Ass
 	}
 
 	return asserts[0], nil
+}
+
+func (x *cmdSign) execDevKey(statement []byte) error {
+	// TODO!!!
+	return nil
 }

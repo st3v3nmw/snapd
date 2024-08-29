@@ -1,0 +1,24 @@
+type: registry-control
+operator-id: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN
+views:
+  -
+    name: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN/network/control-device
+  -
+    name: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN/network/observe-device
+  -
+    name: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN/network/control-interfaces
+  -
+    name: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN/network/observe-interfaces
+sign-key-sha3-384: zU_ILTqVH-eXp7QNGYfiap3wLn4Z8JCqI6s_fxlEq1clElVrRSyvNo89YTRqMKvU
+
+AcLBUgQAAQoABgUCZtAtngAArzoQABnke3LQqh5efKYmtTzGLcgAtIfMyHOuAR/TM2zOa0PXl3jx
+v6tWhegX8GHk+29eo/Tdm1Tt0mS0sjoHjWQV7UGn5Q8cBkbYvue94ur7npJsaKXSUwXawLiG/0AR
+WCgyl3fGeP7QG3ui8SnFY/E4odDcPeGghxkMr5kpAisk+yPyjgx3JxPhG4M0qVHbvt+xNl106XmX
+5makRvpWEzvOn+RNqJlBu20NLj7ZergE30WIryiNJHZyC8GIvuMXovw9+i7V+b9aJT2c3bAqJQfG
+HW2SwnAkNVFvTlr+YLpD0IKWt6wPFyXug/++qBWtD78LB4jrnqsNs+EwMq+r53oEv9dEQc6KanRH
+2Y2X6Lr9FILukSjGVENcg2wPv1ibKgFXbPc8TXVXXExKeecblIzzSmyYuOCZFDe+X5Whw2T/L+LZ
+W29xuHzBQtBCw+bytGWJZIXyH595i0ILF38lewA0PJV4IRrVfYmYJmB6N+mHEyLXtN62PeJghAxl
+dnDUGhFZtEG1wKp8DcaZBVhI7P8Z+eVrMtCy5MnW5sAUVnGzdH/8XaqxgcWtQFU880RSnAS1oJKy
+2T4Q7WnRtyX2Ha9P+mlNNCU1yBw+nQaooxu2yFPlcQJppuhmWIxqxHC5jSOUauONjg9ujMCUwhnE
+abFialtisKJM8vnfubmkVJ6UimpA
+
