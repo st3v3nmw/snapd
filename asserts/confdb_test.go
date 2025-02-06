@@ -442,6 +442,64 @@ func (s *confdbCtrlSuite) TestAckAssertionOK(c *C) {
 	c.Assert(err, IsNil)
 }
 
+func (s *confdbCtrlSuite) TestDelegateOK(c *C) {
+	s.addSerial(c)
+	cc := asserts.NewConfdbControl("canonical", "pc", "42")
+
+	delegated, err := cc.IsDelegated("stephen", "canonical/network/control-vpn", []string{"operator-key"})
+	c.Check(err, IsNil)
+	c.Check(delegated, Equals, false)
+
+	cc.Delegate("stephen", []string{"canonical/network/control-vpn"}, []string{"operator-key", "store"})
+	cc.Delegate("stephen", []string{"canonical/network/control-interfaces"}, []string{"operator-key"})
+
+	delegated, _ = cc.IsDelegated("stephen", "canonical/network/control-vpn", []string{"operator-key"})
+	c.Check(delegated, Equals, true)
+
+	delegated, _ = cc.IsDelegated("stephen", "canonical/network/control-interfaces", []string{"store"})
+	c.Check(delegated, Equals, false)
+}
+
+func (s *confdbCtrlSuite) TestDelegateInvalid(c *C) {
+	s.addSerial(c)
+	cc := asserts.NewConfdbControl("canonical", "pc", "42")
+
+	err := cc.Delegate("", []string{}, []string{})
+	c.Check(err, ErrorMatches, "operator-id is required")
+
+	err = cc.Delegate("john", []string{"c#anonical/network/control-vpn"}, []string{"store"})
+	c.Check(err, ErrorMatches, "cannot delegate: invalid Account ID c#anonical")
+}
+
+func (s *confdbCtrlSuite) TestUndelegateOK(c *C) {
+	a, err := asserts.Decode([]byte(confdbControlExample))
+	c.Assert(err, IsNil)
+
+	cc := a.(*asserts.ConfdbControl)
+	delegated, _ := cc.IsDelegated("john", "canonical/network/control-interfaces", []string{"store"})
+	c.Check(delegated, Equals, true)
+
+	cc.Undelegate("john", []string{"canonical/network/control-interfaces"}, []string{"store"})
+	delegated, _ = cc.IsDelegated("john", "canonical/network/control-interfaces", []string{"store"})
+	c.Check(delegated, Equals, false)
+
+	cc.Undelegate("jane", nil, nil)
+	delegated, _ = cc.IsDelegated("jane", "canonical/network/observe-interfaces", []string{"store", "operator-key"})
+	c.Check(delegated, Equals, false)
+
+	err = cc.Undelegate("who?", []string{"canonical/network/control-device"}, []string{"operator-key"})
+	c.Assert(err, IsNil)
+}
+
+func (s *confdbCtrlSuite) TestUndelegateInvalid(c *C) {
+	a, err := asserts.Decode([]byte(confdbControlExample))
+	c.Assert(err, IsNil)
+
+	cc := a.(*asserts.ConfdbControl)
+	err = cc.Undelegate("jane", []string{"c#anonical/network/observe-interfaces"}, []string{"store"})
+	c.Check(err, ErrorMatches, "cannot undelegate: invalid Account ID c#anonical")
+}
+
 func (s *confdbCtrlSuite) TestGroups(c *C) {
 	confdbCtrl := asserts.NewConfdbControl("canonical", "pc", "42")
 

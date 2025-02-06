@@ -185,6 +185,51 @@ func (cc *ConfdbControl) Serial() string {
 	return cc.HeaderString("serial")
 }
 
+// IsDelegated checks if the view is delegated to the operator with the given auth.
+func (cc *ConfdbControl) IsDelegated(operatorID, view string, auth []string) (bool, error) {
+	operator, ok := cc.operators[operatorID]
+	if !ok {
+		return false, nil // nothing is delegated to this operator
+	}
+
+	return operator.IsDelegated(view, auth)
+}
+
+// Delegate delegates the given views with the provided auth to the operator.
+func (cc *ConfdbControl) Delegate(operatorID string, views, auth []string) error {
+	if len(operatorID) == 0 {
+		return errors.New("operator-id is required")
+	}
+
+	operator, ok := cc.operators[operatorID]
+	if !ok {
+		operator = &confdb.Operator{ID: operatorID}
+	}
+
+	err := operator.Delegate(views, auth)
+	if err != nil {
+		return err
+	}
+
+	cc.operators[operatorID] = operator
+	return nil
+}
+
+// Undelegate withdraws access to the views that have been delegated with the provided auth.
+func (cc *ConfdbControl) Undelegate(operatorID string, views, auth []string) error {
+	operator, ok := cc.operators[operatorID]
+	if !ok {
+		return nil // nothing is delegated to this operator
+	}
+
+	if len(views) == 0 && len(auth) == 0 {
+		delete(cc.operators, operatorID) // completely remove access from this operator
+		return nil
+	}
+
+	return operator.Undelegate(views, auth)
+}
+
 // ConfdbControlGroup holds a single group in a confdb-control assertion.
 type ConfdbControlGroup struct {
 	Operators       []string
