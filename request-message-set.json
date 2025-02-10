@@ -1,0 +1,9 @@
+{
+    "type": "request-message",
+    "authority-id":  "f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN",
+    "account-id": "f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN",
+    "message-id": "38d9606a-9682-44f4-92bb-5137a3a11b1e",
+    "message-type": "confdb-control",
+    "timestamp": "2025-02-10 09:42:24+00:00",
+    "body": "{\n  \"account\": \"6mluykWFsbpSV8RGPGjH7KFAkAOvdRyN\",\n  \"confdb\": \"telem-agent\",\n  \"service\": \"landscape\",\n  \"type\": \"set-confdb-value\",\n  \"value\": {\n    \"tls.target\": \"localhost:1883\"\n  },\n  \"view\": \"control-agent\"\n}"
+}

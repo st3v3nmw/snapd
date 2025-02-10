@@ -1990,6 +1990,24 @@ func (m *DeviceManager) SignConfdbControl(groups []interface{}, revision int) (*
 	return a.(*asserts.ConfdbControl), nil
 }
 
+func (m *DeviceManager) SignResponseMessage(messageType, correlationId, body string) (*asserts.ResponseMessage, error) {
+	privKey, err := m.keyPair()
+	if err != nil {
+		return nil, fmt.Errorf("cannot sign response-message without device key")
+	}
+
+	a, err := asserts.SignWithoutAuthority(asserts.ResponseMessageType, map[string]interface{}{
+		"message-type":   messageType,
+		"correlation-id": correlationId,
+		"body":           body,
+	}, nil, privKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return a.(*asserts.ResponseMessage), nil
+}
+
 // Registered returns a channel that is closed when the device is known to have been registered.
 func (m *DeviceManager) Registered() <-chan struct{} {
 	return m.reg

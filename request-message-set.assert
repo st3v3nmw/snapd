@@ -1,0 +1,30 @@
+type: request-message
+authority-id: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN
+message-id: 38d9606a-9682-44f4-92bb-5137a3a11b1e
+account-id: f22PSauKuNkwQTM9Wz67ZCjNACuSjjhN
+message-type: confdb-control
+timestamp: 2025-02-10 09:42:24+00:00
+body-length: 214
+sign-key-sha3-384: xkd_Y2ay5N2Uo14v_wsCtfVJYLAVbJgxbiKM8Ne4mZBflaROriZgk2nb5i9Oebum
+
+{
+  "account": "6mluykWFsbpSV8RGPGjH7KFAkAOvdRyN",
+  "confdb": "telem-agent",
+  "service": "landscape",
+  "type": "set-confdb-value",
+  "value": {
+    "tls.target": "localhost:1883"
+  },
+  "view": "control-agent"
+}
+
+AcLBcwQAAQoAHRYhBHCftZeyXSJlNBvC+h+HHdMBlPLtBQJnqgcjAAoJEB+HHdMBlPLtJxYQAJ4A
+KBbnnIZfxjsMDBrqmS1+GV3rXBUzhgDHqS45/1W9fOeD8Gj0q2uALXJrcNVBJD3+bPYNEnMIZx8Q
+KSfNFvONFg0yYSpEUfSCno9wlGUYrwNPM2fLsQ9H73Q60dvCFHVPfHufki/2qvTeEqQsvDDPznLV
+WMwC2xc88QI5N5AaxvS0npb83CYKyV/0dxhP8OzrCYnZtrUXipH7603B2r/WbLm2lPD9hGb89Dev
+z0sU0ZHpYe0Rjx7nr7f1guHWlUho58qdZWsh+ZbTvEGmyth5lfJjcr86qzuvrjMVCDeUbTBP/AjI
+hvzOEveE1E8ghi5YT0YJO6NUzL2dVzkkLRRrWjoywrqk0kMvqUaiQ/zaIZzEf6EMISJvJ0FUpmGN
+L2iL9/rg1SpoVPPKC/4TWkoLCFazdDNUs9yfQn9PY8pxILcHviu5oC1LKNOXMvhaiyVGEAhqrUby
+DrGwaMPuyqxj3YZsSj3LFdS86kLCLhJxerbGGB0zwRWjSgEFf0mQjYEelBoT6JM2AZhubSIYKuxS
+z0/d/QYvlceJnmbbRQoocXIZrJsgfVli/DjwYqbABBPUDQz4l+K7Bo6AkpTHLI163g/h1tVR8BlG
+UQ3ljn0/849VLc5ZDFs/NoPXoLK0kKw1058hDrUTsdoEeS6XtM+xRgLMP0Q0MVao4PywUY+a
