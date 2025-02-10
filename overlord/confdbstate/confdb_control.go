@@ -115,7 +115,11 @@ func (m *ConfdbControlManager) handleMessage(msg *asserts.RequestMessage) {
 		result.Status = "ok"
 		result.Value = value
 	}
-	dump, _ := json.Marshal(result)
+
+	dump, err := json.Marshal(result)
+	if err != nil {
+		logger.Noticef("cannot marshal payload: %s", err)
+	}
 
 	resp, err := m.devMgr.SignResponseMessage("confdb-control", msg.HeaderString("message-id"), string(dump))
 	if err != nil {

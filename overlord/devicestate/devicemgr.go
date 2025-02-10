@@ -1991,6 +1991,7 @@ func (m *DeviceManager) SignConfdbControl(groups []interface{}, revision int) (*
 }
 
 func (m *DeviceManager) SignResponseMessage(messageType, correlationId, body string) (*asserts.ResponseMessage, error) {
+	logger.Noticef("message: %s", body)
 	privKey, err := m.keyPair()
 	if err != nil {
 		return nil, fmt.Errorf("cannot sign response-message without device key")
