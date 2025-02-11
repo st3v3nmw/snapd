@@ -14,13 +14,13 @@ import (
 )
 
 type Payload struct {
-	Type    string `json:"type,omitempty"`
-	Service string `json:"service,omitempty"`
 	Account string `json:"account,omitempty"`
 	Confdb  string `json:"confdb,omitempty"`
-	View    string `json:"view,omitempty"`
-	Value   any    `json:"value,omitempty"`
+	Service string `json:"service,omitempty"`
 	Status  string `json:"status,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Value   any    `json:"value,omitempty"`
+	View    string `json:"view,omitempty"`
 }
 
 type Request struct {
