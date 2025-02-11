@@ -1998,6 +1998,7 @@ func (m *DeviceManager) SignResponseMessage(messageType, correlationId string, b
 	}
 
 	a, err := asserts.SignWithoutAuthority(asserts.ResponseMessageType, map[string]interface{}{
+		"message-id":     fmt.Sprintf("reply-%s", correlationId),
 		"message-type":   messageType,
 		"correlation-id": correlationId,
 	}, body, privKey)
