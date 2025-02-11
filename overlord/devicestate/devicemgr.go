@@ -1990,7 +1990,7 @@ func (m *DeviceManager) SignConfdbControl(groups []interface{}, revision int) (*
 	return a.(*asserts.ConfdbControl), nil
 }
 
-func (m *DeviceManager) SignResponseMessage(messageType, correlationId, body string) (*asserts.ResponseMessage, error) {
+func (m *DeviceManager) SignResponseMessage(messageType, correlationId string, body []byte) (*asserts.ResponseMessage, error) {
 	logger.Noticef("message: %s", body)
 	privKey, err := m.keyPair()
 	if err != nil {
@@ -2000,8 +2000,7 @@ func (m *DeviceManager) SignResponseMessage(messageType, correlationId, body str
 	a, err := asserts.SignWithoutAuthority(asserts.ResponseMessageType, map[string]interface{}{
 		"message-type":   messageType,
 		"correlation-id": correlationId,
-		"body":           body,
-	}, nil, privKey)
+	}, body, privKey)
 	if err != nil {
 		return nil, err
 	}
