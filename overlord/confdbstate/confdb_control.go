@@ -137,7 +137,7 @@ func (m *ConfdbControlManager) sendResponse(service string, msg *asserts.Respons
 	url := fmt.Sprintf("http://localhost:5000/push/services/%s", service)
 	body := asserts.Encode(msg)
 
-	_, err := http.Post(url, "application/json", bytes.NewReader(body))
+	_, err := http.Post(url, "application/x.ubuntu.assertion", bytes.NewReader(body))
 	if err != nil {
 		logger.Noticef("cannot send message: %s", err)
 	}
