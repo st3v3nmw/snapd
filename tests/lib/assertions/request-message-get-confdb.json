@@ -1,0 +1,14 @@
+{
+    "type": "request-message",
+    "authority-id": "testrootorg",
+    "account-id": "testrootorg",
+    "message-id": "someId",
+    "message-kind": "confdb",
+    "devices": [
+        "test-serial.test-model.testrootorg"
+    ],
+    "valid-since": "2025-01-01T00:00:00+00:00",
+    "valid-until": "2055-01-01T00:00:00+00:00",
+    "timestamp": "2025-01-01T00:00:00+00:00",
+    "body": "{\"action\":\"get\",\"account\":\"testrootorg\",\"view\":\"test/view\",\"keys\":[\"key1\"]}"
+}

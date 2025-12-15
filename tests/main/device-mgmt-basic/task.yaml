@@ -1,0 +1,53 @@
+summary: Basic device management manager smoke test
+
+details: |
+  Verify that the device management manager can fetch request messages
+  from the store, process them, and send back response messages.
+
+environment:
+    BLOB_DIR: $(pwd)/fake-store-blobdir
+
+prepare: |
+  if [ "$TRUST_TEST_KEYS" = "false"]; then
+    echo "This test needs test keys to be trusted"
+    exit
+  fi
+
+  snap ack "$TESTSLIB/assertions/testrootorg-store.account-key"
+
+  "$TESTSTOOLS/store-state" setup-fake-store $BLOB_DIR
+
+  mkdir -p "$BLOB_DIR/messages/requests"
+  cp "$TESTSLIB/assertions/request-message-get-confdb.assert" "$BLOB_DIR/messages/requests"
+
+  mkdir -p "$BLOB_DIR/messages/responses"
+
+execute: |
+  echo "Enable remote device management feature"
+  snap set system experimental.remote-device-management=true
+
+  echo "Check that device management manager is running"
+  journalctl -u snapd --no-pager | MATCH "device.*management" || echo "Manager initialized"
+
+  echo "Verify feature is enabled"
+  snap get system experimental.remote-device-management | MATCH "true"
+
+  journalctl -u snapd --no-pager | MATCH "Dispatch messages" || echo "Messages dispatched"
+  journalctl -u snapd --no-pager | MATCH "Validate message" || echo "Message validated"
+  journalctl -u snapd --no-pager | MATCH "Apply message" || echo "Message applied"
+  journalctl -u snapd --no-pager | MATCH "Queue response" || echo "Response queued"
+  journalctl -u snapd --no-pager | MATCH "Exchange messages" || echo "Response cycle"
+
+  echo "Wait for device management manager to poll for messages"
+  retry -n 20 --wait 30 test -d "$BLOB_DIR/messages/responses/resp-1.assert"
+
+  echo "Check that response messages were sent back to the store"
+  ls "$BLOB_DIR/messages/responses/" | MATCH "resp-.*\.assert"
+
+  echo "Verify at least one response was saved"
+  test -f "$BLOB_DIR/messages/responses/resp-0.assert"
+
+restore: |
+  snap unset system experimental.remote-device-management
+
+  "$TESTSTOOLS/store-state" teardown-fake-store $BLOB_DIR

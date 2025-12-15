@@ -1,0 +1,25 @@
+type: request-message
+authority-id: testrootorg
+account-id: testrootorg
+message-id: someId
+devices:
+  - test-serial.test-model.testrootorg
+message-kind: confdb
+timestamp: 2025-01-01T00:00:00+00:00
+valid-since: 2025-01-01T00:00:00+00:00
+valid-until: 2055-01-01T00:00:00+00:00
+body-length: 75
+sign-key-sha3-384: EAD4DbLxK_kn0gzNCXOs3kd6DeMU3f-L6BEsSEuJGBqCORR0gXkdDxMbOm11mRFu
+
+{"action":"get","account":"testrootorg","view":"test/view","keys":["key1"]}
+
+AcLBUgQAAQoABgUCaTqLhQAAFCcQAHDolkJwr3y5cEJhKJhJVPfi3ERKoHQYu58z50k/zCR0Mg4H
+kGdfkHtN/YmKdw2Z4duCmgeee7N669dHt3VfEGcpdCbwYWdEnqw4kY+oPNI4Ec+0J9x6edLKcWLK
+vKjDG1lsW/oKbOG/elcnPSffPTXLTRLyJDxObf5o+/HO2x7vexPBc8v9C9YeCdxCGq8Pp2K5zU3r
+c4jR5ajQLTDuZZ2FpWU6PkYqdxXguC20IezNEB5QhgVivrUBBcvQ6m7uWclsnrrSNmf/t5Y9AzPS
+gpq/qnUOKpWLSssg34y8zSgSa9vJ3j/T/gpokF5QuF1QGiMgrtRNQB3Vgt0HTf3bs/ZKFxDfH3SK
+VRKHGrwK7klCbT2lfyw3N2igz0saipezZbPTvFWHPUCmNQ91KACWzLmk+bW8x/7tWEN1GWqQYH7c
+91+z6h/lMxCjgr1UwhtLHcT7dq8LNZedmRP6xkTpWOAePt/MUhnF5fW+QUMffMUtN6mtlxmN2vOA
+vOboOY4ToHg3Y+jaST8xwAG6zFgSb8I7eUeBPP/CA0c8e/GWBuckLkTc1XMJGhgV6jupJqFBD2jV
+CIFyiDwGkwWR9zCNcbxrVSlZ2kL7T5dnMbZW9qCo+5ArCCV5Mn1UCCOlwiajMLpilPhr00zgebbk
+RNnv3OG1CLq8aaX+yhdjuxMprD/n

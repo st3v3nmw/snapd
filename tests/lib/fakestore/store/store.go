@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -35,6 +36,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/snapcore/snapd/asserts"
@@ -79,6 +81,10 @@ type Store struct {
 	channelRepository *ChannelRepository
 
 	snapsCache map[string]snapCachedInfo
+
+	pendingMessages   []MessageWithToken
+	receivedResponses []Message
+	mu                sync.Mutex
 }
 
 // NewStore creates a new store server serving snaps from the given top directory and assertions from topDir/asserts. If assertFallback is true missing assertions are looked up in the main online store.
@@ -119,8 +125,8 @@ func NewStore(topDir, addr string, assertFallback bool) *Store {
 	// v2
 	mux.HandleFunc("/v2/assertions/", store.assertionsEndpoint)
 	mux.HandleFunc("/v2/snaps/refresh", store.snapActionEndpoint)
-
 	mux.HandleFunc("/v2/repairs/", store.repairsEndpoint)
+	mux.HandleFunc("/v2/messages", store.exchangeMessages)
 
 	return store
 }
@@ -1189,4 +1195,125 @@ func (cr *ChannelRepository) findSnapChannels(snapDigest string) ([]string, erro
 		lines = append(lines, sc.Text())
 	}
 	return lines, nil
+}
+
+type Message struct {
+	Format string `json:"format"`
+	Data   string `json:"data"`
+}
+
+type MessageWithToken struct {
+	Message
+	Token string `json:"token"`
+}
+
+func (s *Store) loadMessagesFromDisk() error {
+	messagesDir := filepath.Join(s.blobDir, "messages", "requests")
+	logger.Noticef("messagesDir: %s", messagesDir)
+	msgFiles, err := filepath.Glob(filepath.Join(messagesDir, "request-message*.assert"))
+	logger.Noticef("msgFiles: %v", msgFiles)
+	if err != nil {
+		return err
+	}
+
+	sentTokens := make(map[string]bool)
+	for _, msg := range s.pendingMessages {
+		sentTokens[msg.Token] = true
+	}
+
+	for _, fp := range msgFiles {
+		token := strings.TrimSuffix(filepath.Base(fp), ".assert")
+		if sentTokens[token] {
+			continue
+		}
+
+		data, err := os.ReadFile(fp)
+		if err != nil {
+			return fmt.Errorf("cannot read message file %s: %w", fp, err)
+		}
+
+		s.pendingMessages = append(s.pendingMessages, MessageWithToken{
+			Message: Message{
+				Format: "assertion",
+				Data:   string(data),
+			},
+			Token: token,
+		})
+	}
+
+	logger.Noticef("s.pendingMessages: %#v", s.pendingMessages)
+
+	return nil
+}
+
+func (s *Store) saveResponseToDisk(resp Message, index int) error {
+	responsesDir := filepath.Join(s.blobDir, "messages", "responses")
+
+	filename := filepath.Join(responsesDir, fmt.Sprintf("resp-%d", index))
+	return os.WriteFile(filename, []byte(resp.Data), 0644)
+}
+
+func (s *Store) exchangeMessages(w http.ResponseWriter, req *http.Request) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("cannot read request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	var msgReq struct {
+		After    string    `json:"after"`
+		Limit    int       `json:"limit"`
+		Messages []Message `json:"messages"`
+	}
+
+	err = json.Unmarshal(body, &msgReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("cannot parse request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, msg := range msgReq.Messages {
+		s.receivedResponses = append(s.receivedResponses, msg)
+		err := s.saveResponseToDisk(msg, i)
+		if err != nil {
+			logger.Noticef("cannot save response to disk: %v", err)
+		}
+	}
+
+	err = s.loadMessagesFromDisk()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("cannot load messages: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if msgReq.After != "" {
+		for i, msg := range s.pendingMessages {
+			if msg.Token == msgReq.After {
+				s.pendingMessages = s.pendingMessages[i+1:]
+				break
+			}
+		}
+	}
+
+	messagesToSend := []MessageWithToken{}
+	if msgReq.Limit > 0 && len(s.pendingMessages) > 0 {
+		limit := msgReq.Limit
+		if limit > len(s.pendingMessages) {
+			limit = len(s.pendingMessages)
+		}
+
+		messagesToSend = s.pendingMessages[:limit]
+	}
+
+	resp := map[string]any{
+		"messages":               messagesToSend,
+		"total-pending-messages": len(s.pendingMessages),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
