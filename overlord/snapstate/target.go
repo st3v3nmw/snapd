@@ -95,6 +95,131 @@ type target struct {
 	components []ComponentSetup
 }
 
+// targetFromLocalSnapWithStoreComponents builds a target for an installed snap
+// when the requested revision is already available locally, while still
+// resolving component revisions from the store.
+func targetFromLocalSnapWithStoreComponents(
+	ctx context.Context,
+	st *state.State,
+	snapst *SnapState,
+	up StoreUpdate,
+	opts Options,
+) (target, error) {
+	if !snapst.IsInstalled() {
+		return target{}, errors.New("internal error: cannot create target for local snap without existing installation")
+	}
+
+	var si *snap.SideInfo
+	if !up.RevOpts.Revision.Unset() {
+		si = snapst.Sequence.Revisions[snapst.LastIndex(up.RevOpts.Revision)].Snap
+	} else {
+		si = snapst.CurrentSideInfo()
+	}
+
+	info, err := readInfo(snapst.InstanceName(), si, errorOnBroken)
+	if err != nil {
+		return target{}, err
+	}
+
+	// here, we attempt to refresh components that are currently installed.
+	// first, we take the list of currently installed components and remove
+	// any components that are not available in the target snap revision.
+	// then we check with the store to get the revisions of the desired
+	// components.
+	compsToInstall, err := currentComponentsAvailableInRevision(snapst, info)
+	if err != nil {
+		return target{}, err
+	}
+
+	// add the additional components that the caller requested to be
+	// installed
+	compsToInstall = unique(append(compsToInstall, up.AdditionalComponents...))
+
+	compsups, err := componentSetupsForInstall(ctx, st, compsToInstall, *snapst, RevisionOptions{
+		Channel:        up.RevOpts.Channel,
+		Revision:       si.Revision,
+		ValidationSets: up.RevOpts.ValidationSets,
+	}, opts)
+	if err != nil {
+		return target{}, err
+	}
+
+	// this must happen after the call to componentSetupsForInstall, since
+	// we can't set the channel to the tracking channel if we don't know
+	// that the requested revision is part of this channel
+	trackedChannel := firstNonEmpty(up.RevOpts.Channel, snapst.TrackingChannel)
+
+	// make sure that we switch the current channel of the snap that we're
+	// switching to
+	info.Channel = trackedChannel
+
+	return target{
+		info:   info,
+		snapst: *snapst,
+		setup: SnapSetup{
+			Channel:   trackedChannel,
+			CohortKey: up.RevOpts.CohortKey,
+			SnapPath:  info.MountFile(),
+
+			// if the caller specified a revision, then we always run
+			// through the entire update process. this enables something
+			// like "snap refresh --revision=n", where revision n is already
+			// installed
+			AlwaysUpdate: !up.RevOpts.Revision.Unset(),
+		},
+		components: compsups,
+	}, nil
+}
+
+// targetFromActionResult builds a target from a store action result and the
+// current snap state. Note that channel tracking behavior differs slightly for
+// installs and refreshes to account for redirection to default tracks.
+func targetFromActionResult(sar store.SnapActionResult, snapst *SnapState, revOpts RevisionOptions, comps []string) (target, error) {
+	action := "refresh"
+	if !snapst.IsInstalled() {
+		action = "install"
+	}
+
+	// components will be filtered down to only the components that appear in
+	// the action result, meaning that we might install fewer components than we
+	// have installed right now
+	components, err := componentTargetsFromActionResult(action, sar, comps)
+	if err != nil {
+		return target{}, fmt.Errorf("cannot build target from store action result: %w", err)
+	}
+
+	trackedChannel := revOpts.Channel
+	if action == "refresh" {
+		// if we still have no channel here, this means that we refreshed
+		// by-revision without specifying a channel. make sure we continue to
+		// track the channel that the snap is currently on
+		trackedChannel = firstNonEmpty(
+			trackedChannel,
+			snapst.TrackingChannel,
+		)
+	} else {
+		trackedChannel = firstNonEmpty(
+			sar.RedirectChannel,
+			trackedChannel,
+			// fallback to "stable" should only happen if the caller requested a
+			// specific revision to be installed, without specifying a channel.
+			"stable",
+		)
+	}
+
+	return target{
+		info:   sar.Info,
+		snapst: *snapst,
+		setup: SnapSetup{
+			DownloadInfo:      &sar.DownloadInfo,
+			Channel:           trackedChannel,
+			CohortKey:         revOpts.CohortKey,
+			IntegrityDataInfo: sar.IntegrityData,
+		},
+		components: components,
+	}, nil
+}
+
 // setups returns the completed SnapSetup and slice of ComponentSetup structs
 // for the target snap.
 func (t *target) setups(st *state.State, opts Options) (SnapSetup, []ComponentSetup, error) {
@@ -291,37 +416,12 @@ func (s *storeInstallGoal) toInstall(ctx context.Context, st *state.State, opts 
 			snapst = &SnapState{}
 		}
 
-		var channel string
-		switch {
-		case r.RedirectChannel != "":
-			channel = r.RedirectChannel
-		case sn.RevOpts.Channel != "":
-			channel = sn.RevOpts.Channel
-		default:
-			// this should only ever happen if the caller requested a specific
-			// revision to be installed (without specifying a channel). note
-			// that we won't actually end up tracking "stable", it will get
-			// mapped to "latest/stable" by SnapState.SetTrackingChannel in
-			// doLinkSnap
-			channel = "stable"
-		}
-
-		comps, err := componentTargetsFromActionResult("install", r, sn.Components)
+		target, err := targetFromActionResult(r, snapst, sn.RevOpts, sn.Components)
 		if err != nil {
-			return nil, fmt.Errorf("cannot extract components from snap resources: %w", err)
+			return nil, err
 		}
 
-		installs = append(installs, target{
-			setup: SnapSetup{
-				DownloadInfo:      &r.DownloadInfo,
-				Channel:           channel,
-				CohortKey:         sn.RevOpts.CohortKey,
-				IntegrityDataInfo: r.IntegrityData,
-			},
-			info:       r.Info,
-			snapst:     *snapst,
-			components: comps,
-		})
+		installs = append(installs, target)
 	}
 
 	for _, t := range installs {
@@ -382,7 +482,7 @@ func checkSnapAgainstConstraints(
 	return nil
 }
 
-func checkComponentsAgainstConstraints(snapName string, comps map[string]snap.Revision, constraints snapasserts.SnapPresenceConstraints, action string) error {
+func checkComponentsPresenceAndRevision(snapName string, comps map[string]snap.Revision, constraints snapasserts.SnapPresenceConstraints, action string) error {
 	verb := "install"
 	switch action {
 	case "refresh":
@@ -406,6 +506,21 @@ func checkComponentsAgainstConstraints(snapName string, comps map[string]snap.Re
 		if !cp.Revision.Unset() && compRevision != cp.Revision {
 			return invalidComponentRevisionError(action, snapName, compName, cp.Sets, compRevision, cp.Revision)
 		}
+	}
+	return nil
+}
+
+func checkComponentsAgainstConstraints(snapName string, comps map[string]snap.Revision, constraints snapasserts.SnapPresenceConstraints, action string) error {
+	verb := "install"
+	switch action {
+	case "refresh":
+		verb = "update"
+	case "download":
+		verb = "download"
+	}
+
+	if err := checkComponentsPresenceAndRevision(snapName, comps, constraints, action); err != nil {
+		return err
 	}
 
 	for compName, compPres := range constraints.RequiredComponents() {
@@ -680,8 +795,19 @@ func InstallOne(ctx context.Context, st *state.State, goal InstallGoal, opts Opt
 
 	// this case is unexpected since InstallWithGoal verifies that we are
 	// operating on exactly one target
-	if len(infos) != 1 || len(tasksets) != 1 {
-		return nil, nil, errors.New("internal error: expected exactly one snap and task set")
+	tasksetsCount := 1
+	if !opts.Flags.NoDelayedSideEffects {
+		tasksetsCount++
+	}
+
+	if len(infos) != 1 || len(tasksets) != tasksetsCount {
+		return nil, nil, fmt.Errorf("internal error: expected exactly one snap and %d task set(s)", tasksetsCount)
+	}
+
+	if !opts.Flags.NoDelayedSideEffects {
+		// we're called in a context of a single snap installation, which
+		// means that the side effects can be incorporated into the 'snap' taskset
+		tasksets[0].AddAll(tasksets[1])
 	}
 
 	return infos[0], tasksets[0], nil
@@ -741,6 +867,7 @@ func InstallWithGoal(ctx context.Context, st *state.State, goal InstallGoal, opt
 
 	tasksets := make([]*state.TaskSet, 0, len(targets))
 	infos := make([]*snap.Info, 0, len(targets))
+	snapLanes := make(map[int]bool)
 	for _, t := range targets {
 		if t.setup.SnapPath != "" && t.setup.DownloadInfo != nil {
 			return nil, nil, errors.New("internal error: target cannot specify both a path and a download info")
@@ -766,10 +893,22 @@ func InstallWithGoal(ctx context.Context, st *state.State, goal InstallGoal, opt
 			return nil, nil, err
 		}
 
-		installTS.ts.JoinLane(generateLane(st, opts))
+		lane := generateLane(st, opts)
+		installTS.ts.JoinLane(lane)
+		snapLanes[lane] = true
 
 		tasksets = append(tasksets, installTS.ts)
 		infos = append(infos, t.info)
+	}
+
+	if len(tasksets) > 0 {
+		// guard against a theoretically possible scenario in which install is
+		// called with SkipIfPresent set for every requested snap, and each of
+		// the requested snaps is already installed
+		// XXX however, this place would not even be reached when the request to
+		// the store with an empty snaps list (after pruning) yields similarly
+		// empty list of results
+		tasksets = setupDelayedSecurityBackendEffects(st, tasksets, keys(snapLanes), &opts.Flags)
 	}
 
 	return infos, tasksets, nil
@@ -1023,7 +1162,9 @@ func (p *updatePlan) validateAndFilterTargets(st *state.State, opts Options) err
 
 	ignoreValidation := make(map[string]bool, len(p.targets))
 	for _, t := range p.targets {
-		if t.snapst.IgnoreValidation {
+		// validation done by ValidateRefreshes applies refresh-control gating,
+		// which doesn't make sense to apply to new installations
+		if t.snapst.IgnoreValidation || !t.snapst.IsInstalled() {
 			ignoreValidation[t.info.InstanceName()] = true
 		}
 	}
@@ -1217,6 +1358,9 @@ type StoreUpdate struct {
 	// AdditionalComponents is a list of additional components to install during
 	// the refresh.
 	AdditionalComponents []string
+	// InstallIfMissing indicates that the snap should be installed when it is
+	// not currently installed.
+	InstallIfMissing bool
 }
 
 // StoreUpdateGoal creates a new UpdateGoal to update snaps from the store.
@@ -1275,16 +1419,22 @@ func validateAndInitStoreUpdates(st *state.State, allSnaps map[string]*SnapState
 	for _, sn := range updates {
 		snapst, ok := allSnaps[sn.InstanceName]
 		if !ok {
-			return snap.NotInstalledError{Snap: sn.InstanceName}
+			if !sn.InstallIfMissing {
+				return snap.NotInstalledError{Snap: sn.InstanceName}
+			}
+			snapst = &SnapState{}
+		}
+
+		// for new installations, we default to "stable" if the caller didn't
+		// specify a specific revision or channel. if a revision is provided, we
+		// skip this since the revision might not be in "stable".
+		if !snapst.IsInstalled() && sn.RevOpts.Revision.Unset() {
+			sn.RevOpts.Channel = firstNonEmpty(sn.RevOpts.Channel, "stable")
 		}
 
 		// default to existing cohort key if we don't have a provided one
 		if sn.RevOpts.CohortKey == "" && !sn.RevOpts.LeaveCohort {
 			sn.RevOpts.CohortKey = snapst.CohortKey
-		}
-
-		if err := sn.RevOpts.resolveChannel(sn.InstanceName, snapst.TrackingChannel, opts.DeviceCtx); err != nil {
-			return err
 		}
 
 		additional := make([]string, 0, len(sn.AdditionalComponents))
@@ -1297,6 +1447,15 @@ func validateAndInitStoreUpdates(st *state.State, allSnaps map[string]*SnapState
 			}
 		}
 		sn.AdditionalComponents = additional
+
+		fallback := snapst.TrackingChannel
+		if !snapst.IsInstalled() {
+			fallback = "stable"
+		}
+
+		if err := sn.RevOpts.resolveChannel(sn.InstanceName, fallback, opts.DeviceCtx); err != nil {
+			return err
+		}
 
 		if err := sn.RevOpts.initializeValidationSets(enforcedSetsFunc, opts); err != nil {
 			return err

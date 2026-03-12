@@ -49,6 +49,7 @@ import (
 	"github.com/snapcore/snapd/osutil/squashfs"
 	"github.com/snapcore/snapd/overlord"
 	"github.com/snapcore/snapd/overlord/auth"
+	"github.com/snapcore/snapd/overlord/dot/dottest"
 	"github.com/snapcore/snapd/strutil"
 	userclient "github.com/snapcore/snapd/usersession/client"
 
@@ -385,12 +386,22 @@ SNAPD_APPARMOR_REEXEC=1
 	}))
 	s.AddCleanup(osutil.MockMountInfo(""))
 
+	s.AddCleanup(snapstate.MockProcessDelayedSecurityBackendEffects(func(st *state.State, lanes []int, joinLane int) (ts *state.TaskSet) {
+		tsk := st.NewTask("mock-process-delayed-security-backend-effects", "Process delayed security backend effects")
+		tsk.Set("mock-monitored-lanes", lanes)
+		tsk.Set("mock-apply-in-lane", joinLane)
+		return state.NewTaskSet(tsk)
+	}))
+
 	s.restarts = make(map[string]int)
 	s.AddCleanup(s.mockSystemctlCallsUpdateMounts(c))
 
 	// mock so the actual notification code isn't called. It races with the SetRootDir
 	// call in the TearDown function. It's harmless but triggers go test -race
 	s.AddCleanup(snapstate.MockAsyncPendingRefreshNotification(func(context.Context, *userclient.PendingSnapRefreshInfo) {}))
+
+	restore = dottest.RegisterChangeExporter(c, s.state)
+	s.AddCleanup(restore)
 }
 
 func (s *snapmgrBaseTest) TearDownTest(c *C) {
@@ -436,6 +447,10 @@ func AddForeignTaskHandlers(runner *state.TaskRunner, tracker ForeignTaskTracker
 	runner.AddHandler("transition-ubuntu-core", fakeHandler, nil)
 	runner.AddHandler("update-gadget-assets", fakeHandler, nil)
 	runner.AddHandler("update-managed-boot-config", fakeHandler, nil)
+
+	runner.AddHandler("mock-process-delayed-security-backend-effects", func(task *state.Task, _ *tomb.Tomb) error {
+		return nil
+	}, nil)
 
 	// Add handler to test full aborting of changes
 	erroringHandler := func(task *state.Task, _ *tomb.Tomb) error {
@@ -574,6 +589,7 @@ const (
 	localRevision
 	needsKernelSetup
 	isHybrid
+	mockDelayedEffects
 )
 
 func taskKinds(tasks []*state.Task) []string {
@@ -592,8 +608,7 @@ func taskKinds(tasks []*state.Task) []string {
 	return kinds
 }
 
-func verifyLastTasksetIsReRefresh(c *C, tts []*state.TaskSet) {
-	ts := tts[len(tts)-1]
+func verifyReRefreshTasks(c *C, ts *state.TaskSet) {
 	c.Assert(ts.Tasks(), HasLen, 1)
 	reRefresh := ts.Tasks()[0]
 	c.Check(reRefresh.Kind(), Equals, "check-rerefresh")
@@ -6838,6 +6853,33 @@ func (s *snapmgrTestSuite) TestConflictExclusive(c *C) {
 	c.Assert(conflictErr.ChangeID, Equals, chg.ID())
 }
 
+func (s *snapmgrTestSuite) TestConflictExclusiveBlockedByRefreshOrRevert(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	for _, kind := range []string{"refresh-snap", "revert-snap"} {
+		chg := s.state.NewChange(kind, "...")
+		t := s.state.NewTask("prepare-snap", "task")
+		t.Set("snap-setup", &snapstate.SnapSetup{
+			SideInfo: &snap.SideInfo{
+				RealName: "some-snap",
+				Revision: snap.R(2),
+			},
+		})
+		chg.AddTask(t)
+		chg.SetStatus(state.DoingStatus)
+
+		err := snapstate.CheckChangeConflictRunExclusively(s.state, "remodel")
+		c.Assert(err, FitsTypeOf, &snapstate.ChangeConflictError{}, Commentf("change kind: %s", kind))
+		c.Check(err, ErrorMatches, `other changes in progress \(conflicting change "`+kind+`"\), change "remodel" not allowed until they are done`)
+
+		cerr := err.(*snapstate.ChangeConflictError)
+		c.Check(cerr.ChangeID, Equals, chg.ID())
+
+		chg.SetStatus(state.DoneStatus)
+	}
+}
+
 type contentStore struct {
 	*fakeStore
 	state *state.State
@@ -7569,7 +7611,7 @@ func (s *snapmgrTestSuite) TestGadgetUpdateTaskAddedOnInstall(c *C) {
 	c.Assert(err, IsNil)
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
-	verifyInstallTasks(c, snap.TypeGadget, 0, 0, ts)
+	verifyInstallTasks(c, snap.TypeGadget, mockDelayedEffects, 0, ts)
 }
 
 func (s *snapmgrTestSuite) TestGadgetUpdateTaskAddedOnRefresh(c *C) {
@@ -7593,7 +7635,7 @@ func (s *snapmgrTestSuite) TestGadgetUpdateTaskAddedOnRefresh(c *C) {
 	c.Assert(err, IsNil)
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
-	verifyUpdateTasks(c, snap.TypeGadget, doesReRefresh, 0, ts)
+	verifyUpdateTasks(c, snap.TypeGadget, doesReRefresh|mockDelayedEffects, 0, ts)
 
 }
 
@@ -7634,7 +7676,7 @@ func (s *snapmgrTestSuite) testGadgetUpdateTaskAddedOnUCKernelRefresh(c *C, mode
 	c.Assert(err, IsNil)
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
-	verifyUpdateTasks(c, snap.TypeKernel, opts, 0, ts)
+	verifyUpdateTasks(c, snap.TypeKernel, opts|mockDelayedEffects, 0, ts)
 }
 
 func (s *snapmgrTestSuite) TestGadgetUpdateTaskAddedOnUCKernelRefreshHybrid(c *C) {
@@ -7679,7 +7721,7 @@ func (s *snapmgrTestSuite) testGadgetUpdateTaskAddedOnUCKernelRefreshHybrid(c *C
 	c.Assert(err, IsNil)
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
-	verifyUpdateTasks(c, snap.TypeKernel, opts, 0, ts)
+	verifyUpdateTasks(c, snap.TypeKernel, opts|mockDelayedEffects, 0, ts)
 }
 
 func (s *snapmgrTestSuite) TestForSnapSetupResetsFlags(c *C) {
@@ -9218,6 +9260,11 @@ func (s *snapmgrTestSuite) TestExcludeFromRefreshAppAwareness(c *C) {
 }
 
 func (s *snapmgrTestSuite) TestResolveValidationSetsEnforcementError(c *C) {
+	s.AddCleanup(snapstate.MockProcessDelayedSecurityBackendEffects(func(st *state.State, lanes []int, joinLane int) (ts *state.TaskSet) {
+		// not expecting any calls
+		panic("unexpected call")
+	}))
+
 	s.state.Lock()
 	defer s.state.Unlock()
 
@@ -9307,6 +9354,11 @@ func (s *snapmgrTestSuite) TestResolveValidationSetsEnforcementError(c *C) {
 }
 
 func (s *snapmgrTestSuite) TestResolveValidationSetsEnforcementErrorHookContextCompatibility(c *C) {
+	s.AddCleanup(snapstate.MockProcessDelayedSecurityBackendEffects(func(st *state.State, lanes []int, joinLane int) (ts *state.TaskSet) {
+		// not expecting any calls
+		panic("unexpected call")
+	}))
+
 	s.state.Lock()
 	defer s.state.Unlock()
 
@@ -9398,6 +9450,11 @@ func (s *snapmgrTestSuite) TestResolveValidationSetsEnforcementErrorInvalidCompo
 }
 
 func (s *snapmgrTestSuite) TestResolveValidationSetsEnforcementErrorComponents(c *C) {
+	s.AddCleanup(snapstate.MockProcessDelayedSecurityBackendEffects(func(st *state.State, lanes []int, joinLane int) (ts *state.TaskSet) {
+		// not expecting any calls
+		panic("unexpected call")
+	}))
+
 	headers := map[string]any{
 		"type":         "validation-set",
 		"timestamp":    time.Now().Format(time.RFC3339),
@@ -9889,6 +9946,12 @@ func (s *snapmgrTestSuite) testResolveValidationSetsEnforcementErrorComponents(c
 
 func (s *snapmgrTestSuite) TestResolveValidationSetsEnforcementErrorReverse(c *C) {
 	// fail to enforce the validation set at the end to trigger an undo
+
+	s.AddCleanup(snapstate.MockProcessDelayedSecurityBackendEffects(func(st *state.State, lanes []int, joinLane int) (ts *state.TaskSet) {
+		// not expecting any calls
+		panic("unexpected call")
+	}))
+
 	expectedErr := errors.New("expected")
 	restore := snapstate.MockEnforceValidationSets(func(*state.State, map[string]*asserts.ValidationSet, map[string]int, []*snapasserts.InstalledSnap, map[string]bool, int) error {
 		return expectedErr
@@ -12125,4 +12188,19 @@ func (s *snapStateSuite) TestUnmountAllSnaps(c *C) {
 
 func (s *snapStateSuite) TestEnsureLoopLogging(c *C) {
 	testutil.CheckEnsureLoopLogging("snapmgr.go", c, true, "autorefresh.go", "catalogrefresh.go", "refreshhints.go")
+}
+
+func verifyDelayedEffectsTasks(c *C, ts *state.TaskSet, expectedLanes []int, expectedJoinLane int) {
+	c.Assert(ts.Tasks(), HasLen, 1)
+	c.Check(taskKinds(ts.Tasks()), DeepEquals, []string{"mock-process-delayed-security-backend-effects"})
+	eff := ts.Tasks()[0]
+	var lanes []int
+	c.Check(eff.Get("mock-monitored-lanes", &lanes), IsNil)
+	sort.Ints(lanes)
+	if expectedLanes != nil {
+		c.Check(lanes, DeepEquals, expectedLanes)
+	}
+	var applyInLane int = -42
+	c.Check(eff.Get("mock-apply-in-lane", &applyInLane), IsNil)
+	c.Check(applyInLane, Equals, expectedJoinLane)
 }

@@ -23,6 +23,7 @@ import (
 	. "gopkg.in/check.v1"
 
 	"github.com/snapcore/snapd/dirs"
+	"github.com/snapcore/snapd/overlord/dot/dottest"
 	"github.com/snapcore/snapd/overlord/restart"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
@@ -39,9 +40,16 @@ type rebootSuite struct {
 var _ = Suite(&rebootSuite{})
 
 func (s *rebootSuite) SetUpTest(c *C) {
+	s.BaseTest.SetUpTest(c)
 	dirs.SetRootDir(c.MkDir())
 	s.AddCleanup(func() { dirs.SetRootDir("") })
 	s.state = state.New(nil)
+}
+
+func (s *rebootSuite) TearDownTest(c *C) {
+	restore := dottest.RegisterChangeExporter(c, s.state)
+	s.BaseTest.AddCleanup(restore)
+	s.BaseTest.TearDownTest(c)
 }
 
 func (s *rebootSuite) snapInstallTaskSetForSnapSetup(snapName, base string, snapType snap.Type) snapstate.SnapInstallTaskSet {
@@ -310,16 +318,36 @@ func (s *rebootSuite) TestSetEssentialSnapsRestartBoundariesUC20(c *C) {
 }
 
 func (s *rebootSuite) setDependsOn(c *C, ts, dep *state.TaskSet) bool {
-	firstTaskOfTs, err := ts.Edge(snapstate.BeginEdge)
+	firstTaskOfTS, err := ts.Edge(snapstate.BeginEdge)
 	c.Assert(err, IsNil)
 	lastTaskOfDep, err := dep.Edge(snapstate.EndEdge)
 	c.Assert(err, IsNil)
 
-	for _, wt := range firstTaskOfTs.WaitTasks() {
+	for _, wt := range firstTaskOfTS.WaitTasks() {
 		if wt == lastTaskOfDep {
 			return true
 		}
 	}
+	return false
+}
+
+func waitsOnTransitively(waiter, target *state.Task) bool {
+	stack := append([]*state.Task(nil), waiter.WaitTasks()...)
+	seen := make(map[string]bool, len(stack))
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if cur == target {
+			return true
+		}
+		if seen[cur.ID()] {
+			continue
+		}
+		seen[cur.ID()] = true
+		stack = append(stack, cur.WaitTasks()...)
+	}
+
 	return false
 }
 
@@ -336,7 +364,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsUC16NoSplits(c *C) {
 		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
 		s.snapInstallTaskSetForSnapSetup("my-app", "", snap.TypeApp),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// core, kernel should have individual restart boundaries
@@ -362,7 +390,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapdAndEssential(c *C) {
 		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
 		s.snapInstallTaskSetForSnapSetup("my-app", "", snap.TypeApp),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Snapd should have no restart boundaries
@@ -403,7 +431,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseKernel(c *C) {
 		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
 		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Expect restart boundaries on both
@@ -476,7 +504,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseGadget(c *C) {
 		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
 		s.snapInstallTaskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Expect restart boundaries on both
@@ -545,7 +573,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsGadgetKernel(c *C) {
 		s.snapInstallTaskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
 		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Expect restart boundaries on both
@@ -615,7 +643,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseGadgetKernel(c *C) {
 		s.snapInstallTaskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
 		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	linkSnapBase := stss[0].TaskSet().MaybeEdge(snapstate.MaybeRebootEdge)
@@ -688,6 +716,171 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseGadgetKernel(c *C) {
 	c.Check(s.hasRestartBoundaries(c, stss[1].TaskSet()), Equals, false)
 }
 
+func (s *rebootSuite) TestArrangeSnapInstallTaskSetsEarlyDownloads(c *C) {
+	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	stss := []snapstate.SnapInstallTaskSet{
+		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
+		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
+		s.snapInstallTaskSetForSnapSetup("some-app", "", snap.TypeApp),
+	}
+	earlyDownloads := map[string]bool{
+		"core20":    true,
+		"my-kernel": true,
+	}
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, earlyDownloads)
+	c.Assert(err, IsNil)
+
+	baseLastBefore, err := stss[0].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+	kernelLastBefore, err := stss[1].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	for _, sts := range stss {
+		firstLocalModTask := firstTaskAfterLocalModifications(c, sts.TaskSet())
+		c.Check(waitsOnTransitively(firstLocalModTask, baseLastBefore), Equals, true)
+		c.Check(waitsOnTransitively(firstLocalModTask, kernelLastBefore), Equals, true)
+	}
+}
+
+func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapdEarlyDownload(c *C) {
+	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	stss := []snapstate.SnapInstallTaskSet{
+		s.snapInstallTaskSetForSnapSetup("snapd", "", snap.TypeSnapd),
+		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
+		s.snapInstallTaskSetForSnapSetup("some-app", "", snap.TypeApp),
+	}
+	earlyDownloads := map[string]bool{
+		"snapd": true,
+	}
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, earlyDownloads)
+	c.Assert(err, IsNil)
+
+	snapdLastBefore, err := stss[0].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	baseFirstLocalMod := firstTaskAfterLocalModifications(c, stss[1].TaskSet())
+	c.Check(waitsOnTransitively(baseFirstLocalMod, snapdLastBefore), Equals, true)
+
+	appFirstLocalMod := firstTaskAfterLocalModifications(c, stss[2].TaskSet())
+	c.Check(waitsOnTransitively(appFirstLocalMod, snapdLastBefore), Equals, true)
+
+	baseLastBefore, err := stss[1].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+	appLastBefore, err := stss[2].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	snapdFirstLocalMod := firstTaskAfterLocalModifications(c, stss[0].TaskSet())
+	c.Check(waitsOnTransitively(snapdFirstLocalMod, baseLastBefore), Equals, false)
+	c.Check(waitsOnTransitively(snapdFirstLocalMod, appLastBefore), Equals, false)
+}
+
+func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapdAndEssentialEarlyDownloadsNoCycle(c *C) {
+	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	stss := []snapstate.SnapInstallTaskSet{
+		s.snapInstallTaskSetForSnapSetup("snapd", "", snap.TypeSnapd),
+		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
+		s.snapInstallTaskSetForSnapSetup("some-app", "", snap.TypeApp),
+	}
+	earlyDownloads := map[string]bool{
+		"snapd":  true,
+		"core20": true,
+	}
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, earlyDownloads)
+	c.Assert(err, IsNil)
+
+	snapdEnd, err := stss[0].TaskSet().Edge(snapstate.EndEdge)
+	c.Assert(err, IsNil)
+
+	baseBegin, err := stss[1].TaskSet().Edge(snapstate.BeginEdge)
+	c.Assert(err, IsNil)
+
+	// if this dependency were present, it would create a cycle when snapd and
+	// an essential snap are both in the early download cohort.
+	c.Check(baseBegin.WaitTasks(), Not(testutil.Contains), snapdEnd)
+
+	snapdLastBefore, err := stss[0].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+	baseLastBefore, err := stss[1].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	baseFirstLocalMod := firstTaskAfterLocalModifications(c, stss[1].TaskSet())
+	c.Check(waitsOnTransitively(baseFirstLocalMod, snapdLastBefore), Equals, true)
+
+	snapdFirstLocalMod := firstTaskAfterLocalModifications(c, stss[0].TaskSet())
+	c.Check(waitsOnTransitively(snapdFirstLocalMod, baseLastBefore), Equals, true)
+}
+
+func (s *rebootSuite) TestArrangeSnapInstallTaskSetsEarlyDownloadedAppWaitsAfterEssentials(c *C) {
+	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	stss := []snapstate.SnapInstallTaskSet{
+		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
+		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
+		s.snapInstallTaskSetForSnapSetup("some-app", "", snap.TypeApp),
+		s.snapInstallTaskSetForSnapSetup("some-other-snap", "", snap.TypeApp),
+	}
+	earlyDownloads := map[string]bool{
+		"core20":    true,
+		"my-kernel": true,
+		"some-app":  true,
+	}
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, earlyDownloads)
+	c.Assert(err, IsNil)
+
+	finalEssential, err := stss[1].TaskSet().Edge(snapstate.EndEdge)
+	c.Assert(err, IsNil)
+
+	beginEarlyAppTask, err := stss[2].TaskSet().Edge(snapstate.BeginEdge)
+	c.Assert(err, IsNil)
+	c.Check(beginEarlyAppTask.WaitTasks(), Not(testutil.Contains), finalEssential)
+
+	firstLocalModEarlyApp := firstTaskAfterLocalModifications(c, stss[2].TaskSet())
+	c.Check(firstLocalModEarlyApp.WaitTasks(), testutil.Contains, finalEssential)
+
+	beginNonEarlyAppTask, err := stss[3].TaskSet().Edge(snapstate.BeginEdge)
+	c.Assert(err, IsNil)
+	c.Check(beginNonEarlyAppTask.WaitTasks(), testutil.Contains, finalEssential)
+}
+
+func (s *rebootSuite) TestArrangeSnapInstallTaskSetsNoEarlyDownloads(c *C) {
+	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	stss := []snapstate.SnapInstallTaskSet{
+		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
+		s.snapInstallTaskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
+		s.snapInstallTaskSetForSnapSetup("some-app", "", snap.TypeApp),
+	}
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
+	c.Assert(err, IsNil)
+
+	baseLastBefore, err := stss[0].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+	kernelLastBefore, err := stss[1].TaskSet().Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	firstLocalModTask := firstTaskAfterLocalModifications(c, stss[2].TaskSet())
+	c.Check(firstLocalModTask.WaitTasks(), Not(testutil.Contains), baseLastBefore)
+	c.Check(firstLocalModTask.WaitTasks(), Not(testutil.Contains), kernelLastBefore)
+}
+
 func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapd(c *C) {
 	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
 
@@ -698,7 +891,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapd(c *C) {
 		s.snapInstallTaskSetForSnapSetup("snapd", "", snap.TypeSnapd),
 		s.snapInstallTaskSetForSnapSetup("core20", "", snap.TypeBase),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Do not expect any restart boundaries to be set on snapd
@@ -723,7 +916,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBootBaseAndOtherBases(c *C) 
 		s.snapInstallTaskSetForSnapSetup("core18", "", snap.TypeBase),
 		s.snapInstallTaskSetForSnapSetup("my-app", "", snap.TypeApp),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Only the boot-base should have restart boundary.
@@ -747,7 +940,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsForSnapWithBaseAndWithout(c 
 		s.snapInstallTaskSetForSnapSetup("snap-base-app", "snap-base", snap.TypeApp),
 		s.snapInstallTaskSetForSnapSetup("snap-other-app", "other-base", snap.TypeApp),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// No restart boundaries
@@ -777,7 +970,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsForSnapWithBootBaseAndWithou
 		s.snapInstallTaskSetForSnapSetup("snap-core20-app", "snap-core20", snap.TypeApp),
 		s.snapInstallTaskSetForSnapSetup("snap-other-app", "other-base", snap.TypeApp),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// Restart boundaries is set for core20 as the boot-base
@@ -811,7 +1004,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsAll(c *C) {
 		s.snapInstallTaskSetForSnapSetup("core", "", snap.TypeOS),
 		s.snapInstallTaskSetForSnapSetup("my-app", "", snap.TypeApp),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, IsNil)
 
 	// snapd has no restart boundaries set
@@ -842,6 +1035,6 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsFailsSplit(c *C) {
 	stss := []snapstate.SnapInstallTaskSet{
 		snapstate.NewSnapInstallTaskSetForTest(nil, nil, nil, nil, nil),
 	}
-	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss)
+	err := snapstate.ArrangeInstallTasksForSingleReboot(s.state, stss, nil)
 	c.Assert(err, ErrorMatches, `internal error: snap install task set has empty slices`)
 }
