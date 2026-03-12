@@ -477,24 +477,25 @@ func (m *DeviceMgmtManager) dispatchSequence(ms *deviceMgmtState, dispatchTask *
 
 // dispatchMessage creates the task chain for a single message and returns
 // the final task so callers can chain subsequent messages after it.
-func (m *DeviceMgmtManager) dispatchMessage(awaitTask *state.Task, msg *RequestMessage) *state.Task {
+func (m *DeviceMgmtManager) dispatchMessage(prevTask *state.Task, msg *RequestMessage) *state.Task {
 	chg := awaitTask.Change()
 	lane := m.state.NewLane()
 
-	addTask := func(kind, summary string, prev *state.Task) *state.Task {
+	addTask := func(kind, summary string) *state.Task {
 		t := m.state.NewTask(kind, summary)
 		t.Set("id", msg.ID())
-		t.WaitFor(prev)
+		t.WaitFor(prevTask)
 		t.JoinLane(lane)
 		chg.AddTask(t)
-		return t
+
+		prevTask = t
 	}
 
-	validate := addTask("validate-mgmt-message", fmt.Sprintf("Validate message with id %q", msg.ID()), awaitTask)
-	apply := addTask("apply-mgmt-message", fmt.Sprintf("Apply message with id %q", msg.ID()), validate)
-	queue := addTask("queue-mgmt-response", fmt.Sprintf("Queue response for message with id %q", msg.ID()), apply)
+	addTask("validate-mgmt-message", fmt.Sprintf("Validate message with id %q", msg.ID()))
+	addTask("apply-mgmt-message", fmt.Sprintf("Apply message with id %q", msg.ID()), validate)
+	addTask("queue-mgmt-response", fmt.Sprintf("Queue response for message with id %q", msg.ID()))
 
-	return queue
+	return prevTask
 }
 
 // doValidateMessage performs snapd-level and subsystem-level validation on a message.
