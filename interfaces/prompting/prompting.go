@@ -113,7 +113,7 @@ func NewRequestFromListener(msg notify.MsgNotificationGeneric, sendResponse list
 	if err != nil {
 		return nil, err
 	}
-	requestedPerms, err := AbstractPermissionsFromAppArmorPermissions(iface, aaRequested)
+	requestedPerms, err := abstractPermissionsFromAppArmorPermissions(iface, aaRequested)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func NewRequestFromListener(msg notify.MsgNotificationGeneric, sendResponse list
 		Path:        path,
 	}
 	req.Reply = func(allowedPermissions []string) error {
-		userAllowed, err := AbstractPermissionsToAppArmorPermissions(iface, allowedPermissions)
+		userAllowed, err := abstractPermissionsToAppArmorPermissions(iface, allowedPermissions)
 		if err != nil {
 			return err
 		}
