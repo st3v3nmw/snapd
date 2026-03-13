@@ -201,7 +201,7 @@ func (s *deviceMgmtMgrSuite) TestShouldExchangeMessages(c *C) {
 		cmt := Commentf("%s test", tt.name)
 
 		ms := &devicemgmtstate.DeviceMgmtState{
-			PendingRequests:  make(map[string]*devicemgmtstate.RequestMessage),
+			PendingRequests:  make(map[string][]*devicemgmtstate.RequestMessage),
 			Sequences:        devicemgmtstate.NewSequenceCache(),
 			ReadyResponses:   tt.readyResponses,
 			LastExchangeTime: tt.lastExchangeTime,
@@ -252,7 +252,7 @@ func (s *deviceMgmtMgrSuite) TestEnsureChangeAlreadyInFlight(c *C) {
 
 	expired := time.Now().Add(-(devicemgmtstate.DefaultExchangeInterval + time.Minute))
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests:  make(map[string]*devicemgmtstate.RequestMessage),
+		PendingRequests:  make(map[string][]*devicemgmtstate.RequestMessage),
 		Sequences:        devicemgmtstate.NewSequenceCache(),
 		ReadyResponses:   make(map[string]store.Message),
 		LastExchangeTime: expired,
@@ -341,8 +341,9 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesFetchOK(c *C) {
 	c.Check(ms.LastReceivedToken, Equals, "token-123")
 	c.Check(ms.LastExchangeTime.IsZero(), Equals, false)
 	c.Assert(ms.PendingRequests, HasLen, 1)
+	c.Assert(ms.PendingRequests["someId"], HasLen, 1)
 
-	msg := ms.PendingRequests["someId"]
+	msg := ms.PendingRequests["someId"][0]
 	c.Check(msg.BaseID, Equals, "someId")
 	c.Check(msg.SeqNum, Equals, 0)
 	c.Check(msg.AccountID, Equals, "my-brand")
@@ -369,7 +370,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesReplyOK(c *C) {
 	})
 
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests:   make(map[string]*devicemgmtstate.RequestMessage),
+		PendingRequests:   make(map[string][]*devicemgmtstate.RequestMessage),
 		Sequences:         devicemgmtstate.NewSequenceCache(),
 		LastReceivedToken: "token-123",
 		ReadyResponses: map[string]store.Message{
@@ -540,10 +541,10 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesUnsequenced(c *C) {
 	defer s.st.Unlock()
 
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests: map[string]*devicemgmtstate.RequestMessage{
-			"msg1": makeRequestMessage("msg1", 0, "confdb", "16384"), // already dispatched
-			"msg2": makeRequestMessage("msg2", 0, "confdb", ""),
-			"msg3": makeRequestMessage("msg3", 0, "confdb", ""),
+		PendingRequests: map[string][]*devicemgmtstate.RequestMessage{
+			"msg1": {makeRequestMessage("msg1", 0, "confdb", "16384")}, // already dispatched
+			"msg2": {makeRequestMessage("msg2", 0, "confdb", "")},
+			"msg3": {makeRequestMessage("msg3", 0, "confdb", "")},
 		},
 		Sequences:      devicemgmtstate.NewSequenceCache(),
 		ReadyResponses: make(map[string]store.Message),
@@ -671,9 +672,9 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 	for _, tt := range tests {
 		cmt := Commentf("%s test", tt.name)
 
-		pending := make(map[string]*devicemgmtstate.RequestMessage)
+		pending := make(map[string][]*devicemgmtstate.RequestMessage)
 		for _, msg := range tt.pendingRequests {
-			pending[msg.ID()] = msg
+			pending[msg.BaseID] = append(pending[msg.BaseID], msg)
 		}
 
 		sequences := devicemgmtstate.NewSequenceCache()
@@ -704,10 +705,11 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		}
 
 		var notDispatched []string
-		for id := range pending {
-			_, ok := tt.expectedChain[id]
-			if !ok {
-				notDispatched = append(notDispatched, id)
+		for _, msgs := range pending {
+			for _, msg := range msgs {
+				if _, ok := tt.expectedChain[msg.ID()]; !ok {
+					notDispatched = append(notDispatched, msg.ID())
+				}
 			}
 		}
 
@@ -723,7 +725,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	defer s.st.Unlock()
 
 	baseTime := time.Date(2025, 7, 29, 12, 0, 0, 0, time.UTC)
-	pending := make(map[string]*devicemgmtstate.RequestMessage)
+	pending := make(map[string][]*devicemgmtstate.RequestMessage)
 	seqs := devicemgmtstate.NewSequenceCache()
 	for i := 1; i <= devicemgmtstate.MaxSequences+2; i++ {
 		baseID := fmt.Sprintf("seq-%d", i)
@@ -732,7 +734,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 			msg.ReceiveTime = baseTime.Add(
 				time.Duration(i)*time.Minute + time.Duration(seqNum)*time.Second,
 			)
-			pending[msg.ID()] = msg
+			pending[baseID] = append(pending[baseID], msg)
 		}
 
 		// Build the LRU as enqueueRequests would.
@@ -760,11 +762,10 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	c.Assert(err, IsNil)
 
 	// seq-1 evicted.
-	rejected := ms.PendingRequests["seq-1-1"]
-	c.Assert(rejected, NotNil)
-	c.Check(rejected.Status, Equals, asserts.MessageStatusRejected)
-	c.Check(rejected.Error, Equals, "cannot process message: sequence evicted from cache due to capacity limits")
-	c.Check(ms.PendingRequests["seq-1-2"], IsNil, Commentf("the 2nd message in seq-1 should have been deleted"))
+	seq1 := ms.PendingRequests["seq-1"]
+	c.Assert(seq1, HasLen, 1, Commentf("the 2nd message in seq-1 should have been deleted"))
+	c.Check(seq1[0].Status, Equals, asserts.MessageStatusRejected)
+	c.Check(seq1[0].Error, Equals, "cannot process message: sequence evicted from cache due to capacity limits")
 
 	ti := buildTaskIndex(chg)
 	c.Check(ti.validate["seq-1-1"], IsNil)
@@ -775,8 +776,9 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	c.Check(tracked, Equals, false)
 
 	// seq-2 also evicted.
-	c.Check(ms.PendingRequests["seq-2-1"].Status, Equals, asserts.MessageStatusRejected)
-	c.Check(ms.PendingRequests["seq-2-2"], IsNil)
+	seq2 := ms.PendingRequests["seq-2"]
+	c.Assert(seq2, HasLen, 1, Commentf("the 2nd message in seq-2 should have been deleted"))
+	c.Check(seq2[0].Status, Equals, asserts.MessageStatusRejected)
 
 	c.Check(len(ms.Sequences.Applied), Equals, devicemgmtstate.MaxSequences)
 }

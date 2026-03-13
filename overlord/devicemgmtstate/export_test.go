@@ -37,8 +37,8 @@ var (
 	MaxSequences = maxSequences
 )
 
-func NewSequenceCache() *sequenceCache {
-	return &sequenceCache{
+func NewSequenceCache() sequenceCache {
+	return sequenceCache{
 		Applied: make(map[string]int),
 		LRU:     make([]string, 0),
 	}

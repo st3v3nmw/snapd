@@ -116,12 +116,12 @@ type sequenceCache struct {
 
 // deviceMgmtState holds the persistent state for device management operations.
 type deviceMgmtState struct {
-	// PendingRequests maps message IDs to request messages being processed.
+	// PendingRequests maps base IDs to their pending request messages.
 	// A message stays here from receipt until its response is queued.
-	PendingRequests map[string]*RequestMessage `json:"pending-requests"`
+	PendingRequests map[string][]*RequestMessage `json:"pending-requests"`
 
 	// Sequences is the LRU-bounded cache of tracked message sequences.
-	Sequences *sequenceCache `json:"sequences"`
+	Sequences sequenceCache `json:"sequences"`
 
 	// LastReceivedToken is the token of the last message successfully stored locally,
 	// sent in the "after" field of the next exchange to acknowledge receipt
@@ -148,9 +148,16 @@ func (ms *deviceMgmtState) enqueueRequests(pollResp *store.MessageExchangeRespon
 			continue
 		}
 
-		_, exists := ms.PendingRequests[reqMsg.ID()]
-		if !exists {
-			ms.PendingRequests[reqMsg.ID()] = reqMsg
+		found := false
+		seq := ms.PendingRequests[reqMsg.BaseID]
+		for _, existing := range seq {
+			if existing.SeqNum == reqMsg.SeqNum {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ms.PendingRequests[reqMsg.BaseID] = append(seq, reqMsg)
 		}
 
 		if reqMsg.SeqNum > 0 {
@@ -196,28 +203,22 @@ func (ms *deviceMgmtState) evictLRUSequence() *RequestMessage {
 	}
 
 	baseID := ms.Sequences.LRU[0]
+	ms.Sequences.LRU = ms.Sequences.LRU[1:]
 	delete(ms.Sequences.Applied, baseID)
 
-	ms.Sequences.LRU = ms.Sequences.LRU[1:]
+	msgs := ms.PendingRequests[baseID]
+	if len(msgs) == 0 {
+		return nil
+	}
 
-	var msgs []*RequestMessage
-	var earliest *RequestMessage
-	for _, msg := range ms.PendingRequests {
-		if msg.BaseID == baseID && msg.SeqNum > 0 {
-			msgs = append(msgs, msg)
-
-			if earliest == nil || msg.SeqNum < earliest.SeqNum {
-				earliest = msg
-			}
+	earliest := msgs[0]
+	for _, msg := range msgs[1:] {
+		if msg.SeqNum < earliest.SeqNum {
+			earliest = msg
 		}
 	}
 
-	for _, msg := range msgs {
-		if msg != earliest {
-			delete(ms.PendingRequests, msg.ID())
-		}
-	}
-
+	ms.PendingRequests[baseID] = []*RequestMessage{earliest}
 	return earliest
 }
 
@@ -252,8 +253,8 @@ func (m *DeviceMgmtManager) getState() (*deviceMgmtState, error) {
 	if err != nil {
 		if errors.Is(err, state.ErrNoState) {
 			return &deviceMgmtState{
-				PendingRequests: make(map[string]*RequestMessage),
-				Sequences: &sequenceCache{
+				PendingRequests: make(map[string][]*RequestMessage),
+				Sequences: sequenceCache{
 					Applied: make(map[string]int),
 					LRU:     make([]string, 0),
 				},
@@ -392,38 +393,6 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 	}
 
 	chg := t.Change()
-	m.pruneSequences(chg, ms)
-
-	// Dispatch unsequenced messages.
-	sequences := make(map[string][]*RequestMessage)
-	for _, msg := range ms.PendingRequests {
-		// No explicit "dispatched" marker is needed; the single-change-in-flight
-		// guard in Ensure() prevents concurrent dispatch.
-		if msg.ChangeID != "" || msg.Status != "" {
-			continue // Already dispatched
-		}
-
-		if msg.SeqNum == 0 {
-			m.dispatchMessage(t, msg)
-			continue
-		}
-
-		sequences[msg.BaseID] = append(sequences[msg.BaseID], msg)
-	}
-
-	// Dispatch sequenced messages.
-	for _, msgs := range sequences {
-		m.dispatchSequence(ms, t, msgs)
-	}
-
-	m.setState(ms)
-
-	return nil
-}
-
-// pruneSequences evicts tracked sequences that exceed the capacity limit,
-// queuing a rejection response for each evicted sequence.
-func (m *DeviceMgmtManager) pruneSequences(chg *state.Change, ms *deviceMgmtState) {
 	for len(ms.Sequences.Applied) > maxSequences {
 		earliest := ms.evictLRUSequence()
 		if earliest != nil {
@@ -437,40 +406,50 @@ func (m *DeviceMgmtManager) pruneSequences(chg *state.Change, ms *deviceMgmtStat
 			chg.AddTask(queue)
 		}
 	}
+
+	for baseID, msgs := range ms.PendingRequests {
+		var undispatched []*RequestMessage
+		for _, msg := range msgs {
+			if msg.ChangeID == "" && msg.Status == "" {
+				undispatched = append(undispatched, msg)
+			}
+		}
+
+		if len(undispatched) > 0 {
+			m.dispatchSequence(ms, t, baseID, undispatched)
+		}
+	}
+
+	m.setState(ms)
+
+	return nil
 }
 
 // dispatchSequence dispatches sequenced messages starting from where the sequence left off,
 // chaining consecutive messages. Gaps in the sequence stop the chain.
 // All messages must belong to the same sequence.
-func (m *DeviceMgmtManager) dispatchSequence(ms *deviceMgmtState, dispatchTask *state.Task, msgs []*RequestMessage) {
+func (m *DeviceMgmtManager) dispatchSequence(ms *deviceMgmtState, dispatchTask *state.Task, baseID string, msgs []*RequestMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+
 	sort.Slice(msgs, func(i, j int) bool {
 		return msgs[i].SeqNum < msgs[j].SeqNum
 	})
 
-	// Find the first message that can be dispatched.
-	startIdx := -1
-	applied := ms.Sequences.Applied[msgs[0].BaseID]
-	for i, msg := range msgs {
-		if msg.SeqNum == applied+1 {
-			startIdx = i
-			break
-		}
+	expectedSeqNum := ms.Sequences.Applied[baseID] + 1
+	if msgs[0].SeqNum == 0 {
+		expectedSeqNum = 0
 	}
 
-	if startIdx == -1 {
-		return
-	}
-
-	// Chain consecutive messages from the start point.
 	awaitTask := dispatchTask
-	expectedSeqNum := msgs[startIdx].SeqNum
-	for i := startIdx; i < len(msgs); i++ {
-		if msgs[i].SeqNum != expectedSeqNum {
+	for _, msg := range msgs {
+		if msg.SeqNum != expectedSeqNum {
 			// Gap in sequence, stop chaining.
 			break
 		}
 
-		awaitTask = m.dispatchMessage(awaitTask, msgs[i])
+		awaitTask = m.dispatchMessage(awaitTask, msg)
 		expectedSeqNum++
 	}
 }
@@ -478,10 +457,10 @@ func (m *DeviceMgmtManager) dispatchSequence(ms *deviceMgmtState, dispatchTask *
 // dispatchMessage creates the task chain for a single message and returns
 // the final task so callers can chain subsequent messages after it.
 func (m *DeviceMgmtManager) dispatchMessage(prevTask *state.Task, msg *RequestMessage) *state.Task {
-	chg := awaitTask.Change()
+	chg := prevTask.Change()
 	lane := m.state.NewLane()
 
-	addTask := func(kind, summary string) *state.Task {
+	addTask := func(kind, summary string) {
 		t := m.state.NewTask(kind, summary)
 		t.Set("id", msg.ID())
 		t.WaitFor(prevTask)
@@ -492,7 +471,7 @@ func (m *DeviceMgmtManager) dispatchMessage(prevTask *state.Task, msg *RequestMe
 	}
 
 	addTask("validate-mgmt-message", fmt.Sprintf("Validate message with id %q", msg.ID()))
-	addTask("apply-mgmt-message", fmt.Sprintf("Apply message with id %q", msg.ID()), validate)
+	addTask("apply-mgmt-message", fmt.Sprintf("Apply message with id %q", msg.ID()))
 	addTask("queue-mgmt-response", fmt.Sprintf("Queue response for message with id %q", msg.ID()))
 
 	return prevTask
