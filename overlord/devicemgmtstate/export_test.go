@@ -37,22 +37,17 @@ var (
 	MaxSequences = maxSequences
 )
 
-func NewSequenceCache() sequenceCache {
-	return sequenceCache{
-		Applied: make(map[string]int),
-		LRU:     make([]string, 0),
-	}
-}
+type SequenceState = sequenceState
 
-type DeviceMgmtState deviceMgmtState
+type DeviceMgmtState = deviceMgmtState
 
 func (m *DeviceMgmtManager) GetState() (*DeviceMgmtState, error) {
 	ms, err := m.getState()
-	return (*DeviceMgmtState)(ms), err
+	return ms, err
 }
 
 func (m *DeviceMgmtManager) SetState(ms *DeviceMgmtState) {
-	m.setState((*deviceMgmtState)(ms))
+	m.setState(ms)
 }
 
 func (m *DeviceMgmtManager) MockHandler(kind string, handler MessageHandler) {
@@ -64,7 +59,7 @@ func (m *DeviceMgmtManager) MockSigner(signer ResponseMessageSigner) {
 }
 
 func (m *DeviceMgmtManager) ShouldExchangeMessages(ms *DeviceMgmtState) bool {
-	return m.shouldExchangeMessages((*deviceMgmtState)(ms))
+	return m.shouldExchangeMessages(ms)
 }
 
 func (m *DeviceMgmtManager) DoExchangeMessages(t *state.Task, tomb *tomb.Tomb) error {

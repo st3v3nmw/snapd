@@ -104,24 +104,24 @@ func (msg *RequestMessage) ID() string {
 	return msg.BaseID
 }
 
-// sequenceCache is the LRU-bounded cache of tracked message sequences.
-type sequenceCache struct {
-	// Applied tracks how far each sequence has progressed. A sequenced
-	// message can only be applied once its predecessor has been applied.
-	Applied map[string]int `json:"applied,omitempty"`
+// sequenceState holds the messages and progress for a single base ID,
+// covering both sequenced & unsequenced messages.
+type sequenceState struct {
+	// Messages holds request messages from receipt until their response is queued.
+	Messages []*RequestMessage `json:"messages"`
 
-	// LRU determines eviction order when the cache is full.
-	LRU []string `json:"lru,omitempty"`
+	// Applied is the highest sequence number successfully applied. A sequenced
+	// message can only be applied once its predecessor has been applied.
+	Applied int `json:"applied"`
 }
 
 // deviceMgmtState holds the persistent state for device management operations.
 type deviceMgmtState struct {
-	// PendingRequests maps base IDs to their pending request messages.
-	// A message stays here from receipt until its response is queued.
-	PendingRequests map[string][]*RequestMessage `json:"pending-requests"`
+	// Sequences maps base IDs to their per-base-ID state.
+	Sequences map[string]*sequenceState `json:"sequences"`
 
-	// Sequences is the LRU-bounded cache of tracked message sequences.
-	Sequences sequenceCache `json:"sequences"`
+	// SequenceLRU tracks sequenced base IDs in least-recently-used order for eviction.
+	SequenceLRU []string `json:"sequence-lru"`
 
 	// LastReceivedToken is the token of the last message successfully stored locally,
 	// sent in the "after" field of the next exchange to acknowledge receipt
@@ -148,16 +148,21 @@ func (ms *deviceMgmtState) enqueueRequests(pollResp *store.MessageExchangeRespon
 			continue
 		}
 
+		seq := ms.Sequences[reqMsg.BaseID]
+		if seq == nil {
+			seq = &sequenceState{}
+			ms.Sequences[reqMsg.BaseID] = seq
+		}
+
 		found := false
-		seq := ms.PendingRequests[reqMsg.BaseID]
-		for _, existing := range seq {
+		for _, existing := range seq.Messages {
 			if existing.SeqNum == reqMsg.SeqNum {
 				found = true
 				break
 			}
 		}
 		if !found {
-			ms.PendingRequests[reqMsg.BaseID] = append(seq, reqMsg)
+			seq.Messages = append(seq.Messages, reqMsg)
 		}
 
 		if reqMsg.SeqNum > 0 {
@@ -178,47 +183,42 @@ func (ms *deviceMgmtState) enqueueRequests(pollResp *store.MessageExchangeRespon
 
 // touchSequence marks a sequence as recently used, adding it if new.
 func (ms *deviceMgmtState) touchSequence(baseID string) {
-	_, exists := ms.Sequences.Applied[baseID]
-	if !exists {
-		ms.Sequences.Applied[baseID] = 0
-	}
-
 	// Move sequence to end (most recently used).
-	for i, id := range ms.Sequences.LRU {
+	for i, id := range ms.SequenceLRU {
 		if id == baseID {
-			ms.Sequences.LRU = append(ms.Sequences.LRU[:i], ms.Sequences.LRU[i+1:]...)
+			ms.SequenceLRU = append(ms.SequenceLRU[:i], ms.SequenceLRU[i+1:]...)
 			break
 		}
 	}
 
-	ms.Sequences.LRU = append(ms.Sequences.LRU, baseID)
+	ms.SequenceLRU = append(ms.SequenceLRU, baseID)
 }
 
-// evictLRUSequence evicts the least recently used sequence and returns its earliest
-// pending message for rejection. Remaining messages in the sequence are deleted.
+// evictLRUSequence evicts the least recently used sequence. It returns its earliest
+// pending message for rejection; remaining messages in the sequence are deleted.
 // The returned message is cleaned up by queue-mgmt-response after its response is queued.
 func (ms *deviceMgmtState) evictLRUSequence() *RequestMessage {
-	if len(ms.Sequences.LRU) == 0 {
+	if len(ms.SequenceLRU) == 0 {
 		return nil
 	}
 
-	baseID := ms.Sequences.LRU[0]
-	ms.Sequences.LRU = ms.Sequences.LRU[1:]
-	delete(ms.Sequences.Applied, baseID)
+	baseID := ms.SequenceLRU[0]
+	ms.SequenceLRU = ms.SequenceLRU[1:]
 
-	msgs := ms.PendingRequests[baseID]
-	if len(msgs) == 0 {
+	seq := ms.Sequences[baseID]
+	if seq == nil || len(seq.Messages) == 0 {
+		delete(ms.Sequences, baseID)
 		return nil
 	}
 
-	earliest := msgs[0]
-	for _, msg := range msgs[1:] {
+	earliest := seq.Messages[0]
+	for _, msg := range seq.Messages[1:] {
 		if msg.SeqNum < earliest.SeqNum {
 			earliest = msg
 		}
 	}
 
-	ms.PendingRequests[baseID] = []*RequestMessage{earliest}
+	seq.Messages = []*RequestMessage{earliest}
 	return earliest
 }
 
@@ -253,11 +253,7 @@ func (m *DeviceMgmtManager) getState() (*deviceMgmtState, error) {
 	if err != nil {
 		if errors.Is(err, state.ErrNoState) {
 			return &deviceMgmtState{
-				PendingRequests: make(map[string][]*RequestMessage),
-				Sequences: sequenceCache{
-					Applied: make(map[string]int),
-					LRU:     make([]string, 0),
-				},
+				Sequences:      make(map[string]*sequenceState),
 				ReadyResponses: make(map[string]store.Message),
 			}, nil
 		}
@@ -265,8 +261,12 @@ func (m *DeviceMgmtManager) getState() (*deviceMgmtState, error) {
 		return nil, err
 	}
 
-	if ms.Sequences.Applied == nil {
-		ms.Sequences.Applied = make(map[string]int)
+	if ms.Sequences == nil {
+		ms.Sequences = make(map[string]*sequenceState)
+	}
+
+	if ms.ReadyResponses == nil {
+		ms.ReadyResponses = map[string]store.Message{}
 	}
 
 	return &ms, nil
@@ -287,8 +287,7 @@ func (m *DeviceMgmtManager) Ensure() error {
 		return err
 	}
 
-	exchange := m.shouldExchangeMessages(ms)
-	if !exchange {
+	if !m.shouldExchangeMessages(ms) {
 		return nil
 	}
 
@@ -393,7 +392,7 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 	}
 
 	chg := t.Change()
-	for len(ms.Sequences.Applied) > maxSequences {
+	for len(ms.SequenceLRU) > maxSequences {
 		earliest := ms.evictLRUSequence()
 		if earliest != nil {
 			earliest.Status = asserts.MessageStatusRejected
@@ -407,9 +406,9 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 		}
 	}
 
-	for baseID, msgs := range ms.PendingRequests {
+	for baseID, seq := range ms.Sequences {
 		var undispatched []*RequestMessage
-		for _, msg := range msgs {
+		for _, msg := range seq.Messages {
 			if msg.ChangeID == "" && msg.Status == "" {
 				undispatched = append(undispatched, msg)
 			}
@@ -437,7 +436,7 @@ func (m *DeviceMgmtManager) dispatchSequence(ms *deviceMgmtState, dispatchTask *
 		return msgs[i].SeqNum < msgs[j].SeqNum
 	})
 
-	expectedSeqNum := ms.Sequences.Applied[baseID] + 1
+	expectedSeqNum := ms.Sequences[baseID].Applied + 1
 	if msgs[0].SeqNum == 0 {
 		expectedSeqNum = 0
 	}

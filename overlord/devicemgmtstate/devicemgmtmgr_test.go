@@ -201,8 +201,7 @@ func (s *deviceMgmtMgrSuite) TestShouldExchangeMessages(c *C) {
 		cmt := Commentf("%s test", tt.name)
 
 		ms := &devicemgmtstate.DeviceMgmtState{
-			PendingRequests:  make(map[string][]*devicemgmtstate.RequestMessage),
-			Sequences:        devicemgmtstate.NewSequenceCache(),
+			Sequences:        make(map[string]*devicemgmtstate.SequenceState),
 			ReadyResponses:   tt.readyResponses,
 			LastExchangeTime: tt.lastExchangeTime,
 		}
@@ -252,8 +251,7 @@ func (s *deviceMgmtMgrSuite) TestEnsureChangeAlreadyInFlight(c *C) {
 
 	expired := time.Now().Add(-(devicemgmtstate.DefaultExchangeInterval + time.Minute))
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests:  make(map[string][]*devicemgmtstate.RequestMessage),
-		Sequences:        devicemgmtstate.NewSequenceCache(),
+		Sequences:        make(map[string]*devicemgmtstate.SequenceState),
 		ReadyResponses:   make(map[string]store.Message),
 		LastExchangeTime: expired,
 	}
@@ -340,10 +338,10 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesFetchOK(c *C) {
 	c.Assert(err, IsNil)
 	c.Check(ms.LastReceivedToken, Equals, "token-123")
 	c.Check(ms.LastExchangeTime.IsZero(), Equals, false)
-	c.Assert(ms.PendingRequests, HasLen, 1)
-	c.Assert(ms.PendingRequests["someId"], HasLen, 1)
+	c.Assert(ms.Sequences, HasLen, 1)
+	c.Assert(ms.Sequences["someId"].Messages, HasLen, 1)
 
-	msg := ms.PendingRequests["someId"][0]
+	msg := ms.Sequences["someId"].Messages[0]
 	c.Check(msg.BaseID, Equals, "someId")
 	c.Check(msg.SeqNum, Equals, 0)
 	c.Check(msg.AccountID, Equals, "my-brand")
@@ -370,8 +368,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesReplyOK(c *C) {
 	})
 
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests:   make(map[string][]*devicemgmtstate.RequestMessage),
-		Sequences:         devicemgmtstate.NewSequenceCache(),
+		Sequences:         make(map[string]*devicemgmtstate.SequenceState),
 		LastReceivedToken: "token-123",
 		ReadyResponses: map[string]store.Message{
 			"someId": {Format: "assertion", Data: "response-data"},
@@ -390,7 +387,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesReplyOK(c *C) {
 	c.Assert(err, IsNil)
 	c.Check(ms.LastReceivedToken, Equals, "")
 	c.Check(ms.ReadyResponses, HasLen, 0)
-	c.Check(ms.PendingRequests, HasLen, 0)
+	c.Check(ms.Sequences, HasLen, 0)
 }
 
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesSequenceLRU(c *C) {
@@ -452,7 +449,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesSequenceLRU(c *C) {
 	c.Assert(err, IsNil)
 
 	// seqA's second touch moves it after seqC, leaving seqB least recently used.
-	c.Check(ms.Sequences.LRU, DeepEquals, []string{"seqB", "seqC", "seqA"})
+	c.Check(ms.SequenceLRU, DeepEquals, []string{"seqB", "seqC", "seqA"})
 }
 
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesInvalidMessage(c *C) {
@@ -489,7 +486,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesInvalidMessage(c *C) {
 	ms, err := s.mgr.GetState()
 	c.Assert(err, IsNil)
 	c.Check(ms.LastReceivedToken, Equals, "token-123")
-	c.Check(ms.PendingRequests, HasLen, 0)
+	c.Check(ms.Sequences, HasLen, 0)
 }
 
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDeviceNotSeeded(c *C) {
@@ -541,12 +538,11 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesUnsequenced(c *C) {
 	defer s.st.Unlock()
 
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests: map[string][]*devicemgmtstate.RequestMessage{
-			"msg1": {makeRequestMessage("msg1", 0, "confdb", "16384")}, // already dispatched
-			"msg2": {makeRequestMessage("msg2", 0, "confdb", "")},
-			"msg3": {makeRequestMessage("msg3", 0, "confdb", "")},
+		Sequences: map[string]*devicemgmtstate.SequenceState{
+			"msg1": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg1", 0, "confdb", "16384")}},
+			"msg2": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg2", 0, "confdb", "")}},
+			"msg3": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg3", 0, "confdb", "")}},
 		},
-		Sequences:      devicemgmtstate.NewSequenceCache(),
 		ReadyResponses: make(map[string]store.Message),
 	}
 	s.mgr.SetState(ms)
@@ -672,21 +668,25 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 	for _, tt := range tests {
 		cmt := Commentf("%s test", tt.name)
 
-		pending := make(map[string][]*devicemgmtstate.RequestMessage)
+		sequences := make(map[string]*devicemgmtstate.SequenceState)
 		for _, msg := range tt.pendingRequests {
-			pending[msg.BaseID] = append(pending[msg.BaseID], msg)
+			if sequences[msg.BaseID] == nil {
+				sequences[msg.BaseID] = &devicemgmtstate.SequenceState{}
+			}
+
+			sequences[msg.BaseID].Messages = append(sequences[msg.BaseID].Messages, msg)
 		}
 
-		sequences := devicemgmtstate.NewSequenceCache()
+		sequenceLRU := make([]string, 0)
 		for seqID, lastApplied := range tt.sequences {
-			sequences.Applied[seqID] = lastApplied
-			sequences.LRU = append(sequences.LRU, seqID)
+			sequences[seqID].Applied = lastApplied
+			sequenceLRU = append(sequenceLRU, seqID)
 		}
 
 		ms := &devicemgmtstate.DeviceMgmtState{
-			PendingRequests: pending,
-			Sequences:       sequences,
-			ReadyResponses:  make(map[string]store.Message),
+			Sequences:      sequences,
+			SequenceLRU:    sequenceLRU,
+			ReadyResponses: make(map[string]store.Message),
 		}
 		s.mgr.SetState(ms)
 
@@ -705,8 +705,8 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		}
 
 		var notDispatched []string
-		for _, msgs := range pending {
-			for _, msg := range msgs {
+		for _, seq := range sequences {
+			for _, msg := range seq.Messages {
 				if _, ok := tt.expectedChain[msg.ID()]; !ok {
 					notDispatched = append(notDispatched, msg.ID())
 				}
@@ -725,27 +725,26 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	defer s.st.Unlock()
 
 	baseTime := time.Date(2025, 7, 29, 12, 0, 0, 0, time.UTC)
-	pending := make(map[string][]*devicemgmtstate.RequestMessage)
-	seqs := devicemgmtstate.NewSequenceCache()
+	sequences := make(map[string]*devicemgmtstate.SequenceState)
+	sequenceLRU := make([]string, 0, devicemgmtstate.MaxSequences+2)
 	for i := 1; i <= devicemgmtstate.MaxSequences+2; i++ {
 		baseID := fmt.Sprintf("seq-%d", i)
+		seq := &devicemgmtstate.SequenceState{}
 		for _, seqNum := range []int{1, 2} {
 			msg := makeRequestMessage(baseID, seqNum, "confdb", "")
 			msg.ReceiveTime = baseTime.Add(
 				time.Duration(i)*time.Minute + time.Duration(seqNum)*time.Second,
 			)
-			pending[baseID] = append(pending[baseID], msg)
+			seq.Messages = append(seq.Messages, msg)
 		}
-
-		// Build the LRU as enqueueRequests would.
-		seqs.Applied[baseID] = 0
-		seqs.LRU = append(seqs.LRU, baseID)
+		sequences[baseID] = seq
+		sequenceLRU = append(sequenceLRU, baseID)
 	}
 
 	ms := &devicemgmtstate.DeviceMgmtState{
-		PendingRequests: pending,
-		Sequences:       seqs,
-		ReadyResponses:  make(map[string]store.Message),
+		Sequences:      sequences,
+		SequenceLRU:    sequenceLRU,
+		ReadyResponses: make(map[string]store.Message),
 	}
 	s.mgr.SetState(ms)
 
@@ -762,25 +761,22 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	c.Assert(err, IsNil)
 
 	// seq-1 evicted.
-	seq1 := ms.PendingRequests["seq-1"]
-	c.Assert(seq1, HasLen, 1, Commentf("the 2nd message in seq-1 should have been deleted"))
-	c.Check(seq1[0].Status, Equals, asserts.MessageStatusRejected)
-	c.Check(seq1[0].Error, Equals, "cannot process message: sequence evicted from cache due to capacity limits")
+	seq1 := ms.Sequences["seq-1"]
+	c.Assert(seq1.Messages, HasLen, 1, Commentf("the 2nd message in seq-1 should have been deleted"))
+	c.Check(seq1.Messages[0].Status, Equals, asserts.MessageStatusRejected)
+	c.Check(seq1.Messages[0].Error, Equals, "cannot process message: sequence evicted from cache due to capacity limits")
 
 	ti := buildTaskIndex(chg)
 	c.Check(ti.validate["seq-1-1"], IsNil)
 	c.Check(ti.apply["seq-1-1"], IsNil)
 	c.Check(ti.queue["seq-1-1"], NotNil)
 
-	_, tracked := ms.Sequences.Applied["seq-1"]
-	c.Check(tracked, Equals, false)
-
 	// seq-2 also evicted.
-	seq2 := ms.PendingRequests["seq-2"]
-	c.Assert(seq2, HasLen, 1, Commentf("the 2nd message in seq-2 should have been deleted"))
-	c.Check(seq2[0].Status, Equals, asserts.MessageStatusRejected)
+	seq2 := ms.Sequences["seq-2"]
+	c.Assert(seq2.Messages, HasLen, 1, Commentf("the 2nd message in seq-2 should have been deleted"))
+	c.Check(seq2.Messages[0].Status, Equals, asserts.MessageStatusRejected)
 
-	c.Check(len(ms.Sequences.Applied), Equals, devicemgmtstate.MaxSequences)
+	c.Check(len(ms.SequenceLRU), Equals, devicemgmtstate.MaxSequences)
 }
 
 func (s *deviceMgmtMgrSuite) TestParseRequestMessageInvalid(c *C) {
