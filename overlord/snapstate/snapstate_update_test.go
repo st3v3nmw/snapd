@@ -435,6 +435,7 @@ func (s *snapmgrTestSuite) testUpdateCanDoBackwards(c *C, refreshAppAwarenessUX 
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "some-snap/11"),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -1232,6 +1233,7 @@ func (s *snapmgrTestSuite) testUpdateRunThrough(c *C, refreshAppAwarenessUX bool
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "services-snap/7"),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -1615,6 +1617,7 @@ func (s *snapmgrTestSuite) testParallelInstanceUpdateRunThrough(c *C, refreshApp
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "services-snap_instance/7"),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -2534,6 +2537,7 @@ func (s *snapmgrTestSuite) testUpdateUndoRunThrough(c *C, refreshAppAwarenessUX 
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "some-snap/7"),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -2881,6 +2885,7 @@ func (s *snapmgrTestSuite) testUpdateTotalUndoRunThrough(c *C, refreshAppAwarene
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "some-snap/7"),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -14023,9 +14028,7 @@ func (s *snapmgrTestSuite) TestUndoUpdateSnapdAndSnapPullingNewBase(c *C) {
 // with an app depending on the model base, to test that the update doesn't make
 // apps wait for the reboot required by the essential snaps.
 func (s *snapmgrTestSuite) setupSplitRefreshAppDependsOnModelBase(c *C, core18BasedApp bool) (names []string, infos []*snap.SideInfo) {
-	restore := release.MockOnClassic(true)
-	s.AddCleanup(restore)
-	restore = snapstatetest.MockDeviceModel(ModelWithBase("core18"))
+	restore := snapstatetest.MockDeviceModel(ModelWithBase("core18"))
 	s.AddCleanup(restore)
 
 	snaps := []string{"snapd", "kernel", "core18", "gadget", "some-base", "some-base-snap"}
@@ -14116,6 +14119,9 @@ func (s *snapmgrTestSuite) setupSplitRefreshAppDependsOnModelBase(c *C, core18Ba
 func (s *snapmgrTestSuite) TestUpdateManySplitEssentialWithSharedBase(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
+
+	restore := release.MockOnClassic(true)
+	s.AddCleanup(restore)
 
 	sharedBase := true
 	_, infos := s.setupSplitRefreshAppDependsOnModelBase(c, sharedBase)
@@ -14310,6 +14316,9 @@ func (s *snapmgrTestSuite) TestUpdateManySplitEssentialWithoutSharedBase(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
+	restore := release.MockOnClassic(true)
+	s.AddCleanup(restore)
+
 	sharedBase := false
 	_, infos := s.setupSplitRefreshAppDependsOnModelBase(c, sharedBase)
 
@@ -14380,8 +14389,23 @@ func (s *snapmgrTestSuite) TestUpdateManySplitEssentialWithoutSharedBase(c *C) {
 }
 
 func (s *snapmgrTestSuite) TestSplitRefreshUsesSameTransaction(c *C) {
+	const createLane = false
+	s.testSplitRefreshUsesSameTransaction(c, createLane)
+}
+
+func (s *snapmgrTestSuite) TestSplitRefreshUsesProvidedTransactionLane(c *C) {
+	const createLane = true
+	s.testSplitRefreshUsesSameTransaction(c, createLane)
+}
+
+func (s *snapmgrTestSuite) testSplitRefreshUsesSameTransaction(c *C, createLane bool) {
 	s.state.Lock()
 	defer s.state.Unlock()
+
+	providedLane := 0
+	if createLane {
+		providedLane = s.state.NewLane()
+	}
 
 	restore := snapstatetest.MockDeviceModel(ModelWithBase("core18"))
 	defer restore()
@@ -14419,17 +14443,28 @@ func (s *snapmgrTestSuite) TestSplitRefreshUsesSameTransaction(c *C) {
 		})
 	}
 
-	affected, tss, err := snapstate.UpdateMany(context.Background(), s.state,
-		snaps, nil, s.user.ID, &snapstate.Flags{NoReRefresh: true, Transaction: client.TransactionAllSnaps})
+	affected, tss, err := snapstate.UpdateMany(context.Background(), s.state, snaps, nil, s.user.ID, &snapstate.Flags{
+		NoReRefresh: true,
+		Transaction: client.TransactionAllSnaps,
+		Lane:        providedLane,
+	})
 	c.Assert(err, IsNil)
 	c.Assert(affected, testutil.DeepUnsortedMatches, snaps)
+
+	lanes := tss[0].Tasks()[0].Lanes()
+	c.Assert(lanes, HasLen, 1)
+	lane := lanes[0]
+	c.Assert(lane, Not(Equals), 0)
+	if createLane {
+		c.Assert(lane, Equals, providedLane)
+	}
 
 	// fail the kernel refresh at the end
 	ts, err := snapstate.MaybeFindTasksetForSnap(tss, "kernel")
 	c.Assert(err, IsNil)
 	lastTask := ts.MaybeEdge(snapstate.EndEdge)
 	failTask := s.state.NewTask("fail", "")
-	failTask.JoinLane(tss[0].Tasks()[0].Lanes()[0])
+	failTask.JoinLane(lane)
 	failTask.WaitFor(lastTask)
 	ts.AddTask(failTask)
 
@@ -14440,7 +14475,7 @@ func (s *snapmgrTestSuite) TestSplitRefreshUsesSameTransaction(c *C) {
 
 	for _, ts := range tss {
 		for _, t := range ts.Tasks() {
-			c.Assert(t.Lanes(), DeepEquals, []int{1})
+			c.Assert(t.Lanes(), DeepEquals, []int{lane})
 		}
 	}
 
@@ -15024,8 +15059,9 @@ func (s *snapmgrTestSuite) TestUpdateBackToPrevRevision(c *C) {
 			name: instanceName,
 		},
 		{
-			op:   "unlink-snap",
-			path: filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
+			op:          "unlink-snap",
+			path:        filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
+			inhibitHint: "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -15274,8 +15310,9 @@ func (s *snapmgrTestSuite) testRevertWithComponents(c *C, undo bool) {
 			name: instanceName,
 		},
 		{
-			op:   "unlink-snap",
-			path: filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
+			op:          "unlink-snap",
+			path:        filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
+			inhibitHint: "refresh",
 		},
 		{
 			op:    "setup-profiles:Doing",
@@ -15665,8 +15702,9 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 			name: snapName,
 		},
 		{
-			op:   "unlink-snap",
-			path: filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			op:          "unlink-snap",
+			path:        filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			inhibitHint: "refresh",
 		},
 		{
 			op: "prepare-kernel-snap",
@@ -16015,8 +16053,9 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevisionAddComponen
 			name: snapName,
 		},
 		{
-			op:   "unlink-snap",
-			path: filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			op:          "unlink-snap",
+			path:        filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			inhibitHint: "refresh",
 		},
 		{
 			op: "prepare-kernel-snap",
@@ -16716,6 +16755,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
 			unlinkSkipBinaries: opts.refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		}}...)
 	if opts.snapType == snap.TypeKernel {
 		expected = append(expected, fakeOp{
@@ -17239,6 +17279,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThroughShareComponents(c *
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
 			unlinkSkipBinaries: true,
+			inhibitHint:        "refresh",
 		},
 		{
 			op: "prepare-kernel-snap",
@@ -17961,6 +18002,7 @@ components:
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		}}...)
 	if snapType == snap.TypeKernel {
 		expected = append(expected,
@@ -18364,6 +18406,7 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsFromPathBackToInstalledRevisi
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
 			unlinkSkipBinaries: true,
+			inhibitHint:        "refresh",
 		},
 		{
 			op: "prepare-kernel-snap",
@@ -18842,6 +18885,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThroughOnlyComponentUpdate
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
 			unlinkSkipBinaries: opts.refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		})
 	if opts.snapType == snap.TypeKernel {
 		expected = append(expected,
