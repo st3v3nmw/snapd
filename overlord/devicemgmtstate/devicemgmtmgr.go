@@ -155,16 +155,17 @@ func (ms *deviceMgmtState) enqueueRequests(pollResp *store.MessageExchangeRespon
 			ms.Sequences[reqMsg.BaseID] = seq
 		}
 
-		found := false
-		for _, existing := range seq.Messages {
-			if existing.SeqNum == reqMsg.SeqNum {
-				found = true
-				break
-			}
+		// TODO:GOVERSION:1.21: replace with slices.BinarySearchFunc
+		i := sort.Search(len(seq.Messages), func(i int) bool {
+			return seq.Messages[i].SeqNum >= reqMsg.SeqNum
+		})
+		if i < len(seq.Messages) && seq.Messages[i].SeqNum == reqMsg.SeqNum {
+			continue // duplicate
 		}
-		if !found {
-			seq.Messages = append(seq.Messages, reqMsg)
-		}
+		// TODO:GOVERSION:1.21: replace with slices.Insert(seq.Messages, i, reqMsg)
+		seq.Messages = append(seq.Messages, nil)
+		copy(seq.Messages[i+1:], seq.Messages[i:])
+		seq.Messages[i] = reqMsg
 
 		if reqMsg.SeqNum > 0 {
 			// Move to end of LRU to mark as recently used.
@@ -385,30 +386,21 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 
 // dispatchSequence dispatches pending messages in a sequence starting from where
 // it left off, chaining consecutive messages. Gaps in the sequence stop the chain.
+// Messages are assumed to be sorted by SeqNum.
 func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequenceState) {
-	var undispatched []*RequestMessage
-	for _, msg := range seq.Messages {
-		if msg.ChangeID == "" && msg.Status == "" {
-			undispatched = append(undispatched, msg)
-		}
-	}
-	if len(undispatched) == 0 {
-		return
-	}
-
-	sort.Slice(undispatched, func(i, j int) bool {
-		return undispatched[i].SeqNum < undispatched[j].SeqNum
-	})
-
-	// Unsequenced messages always use SeqNum 0.
+	// Unsequenced messages have SeqNum 0.
 	expectedSeqNum := 0
 	// Sequenced messages resume from where the sequence left off.
-	if undispatched[0].SeqNum != 0 {
+	if len(seq.Messages) > 0 && seq.Messages[0].SeqNum != 0 {
 		expectedSeqNum = seq.Applied + 1
 	}
 
 	awaitTask := dispatchTask
-	for _, msg := range undispatched {
+	for _, msg := range seq.Messages {
+		if msg.ChangeID != "" || msg.Status != "" {
+			continue
+		}
+
 		if msg.SeqNum != expectedSeqNum {
 			// Gap in sequence, stop chaining.
 			break
@@ -453,12 +445,6 @@ func (m *DeviceMgmtManager) rejectSequence(ms *deviceMgmtState, chg *state.Chang
 	}
 
 	earliest := seq.Messages[0]
-	for _, msg := range seq.Messages[1:] {
-		if msg.SeqNum < earliest.SeqNum {
-			earliest = msg
-		}
-	}
-
 	earliest.Status = asserts.MessageStatusRejected
 	earliest.Error = reason
 	seq.Messages = []*RequestMessage{earliest}
