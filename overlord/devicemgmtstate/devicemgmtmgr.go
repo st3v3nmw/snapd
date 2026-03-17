@@ -421,7 +421,7 @@ func (m *DeviceMgmtManager) dispatchMessage(prevTask *state.Task, msg *RequestMe
 
 	addTask := func(kind, summary string) {
 		t := m.state.NewTask(kind, summary)
-		t.Set("id", msg.ID())
+		t.Set("message-id", msg.ID())
 		t.WaitFor(prevTask)
 		t.JoinLane(lane)
 		chg.AddTask(t)
@@ -453,7 +453,7 @@ func (m *DeviceMgmtManager) rejectSequence(ms *deviceMgmtState, chg *state.Chang
 
 	lane := m.state.NewLane()
 	queue := m.state.NewTask("queue-mgmt-response", fmt.Sprintf("Queue response for message with id %q", earliest.ID()))
-	queue.Set("id", earliest.ID())
+	queue.Set("message-id", earliest.ID())
 	queue.JoinLane(lane)
 	chg.AddTask(queue)
 }
