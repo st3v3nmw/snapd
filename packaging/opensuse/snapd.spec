@@ -22,6 +22,11 @@
 # Test keys: used for internal testing in snapd.
 %bcond_with testkeys
 
+%if 0%{?suse_version} >= 1600
+# Workaround recursively defined sle_version, see sbc#1238724.
+%undefine sle_version
+%endif
+
 # Enable apparmor on Tumbleweed and Leap 15.3+
 %if 0%{?suse_version} >= 1550 || 0%{?sle_version} >= 150300
 %bcond_without apparmor
