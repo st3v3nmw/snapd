@@ -297,6 +297,7 @@ func delayedCrossMgrInit() {
 	snapstate.IsOnMeteredConnection = netutil.IsOnMeteredConnection
 	snapstate.DeviceCtx = DeviceCtx
 	snapstate.RemodelingChange = RemodelingChange
+	snapstate.SeedRefreshTasks = SeedRefreshTasks
 }
 
 // proxyStore returns the store assertion for the proxy store if one is set.
@@ -1112,6 +1113,38 @@ func sortNonEssentialRemodelTaskSetsBasesFirst(snaps []*asserts.ModelSnap) []*as
 	return sorted
 }
 
+func shouldRegenerateCertificateDatabase(current, new *asserts.Model) bool {
+	// If the boot-base is being changed, then we should regenerate the cert db
+	// as that carry system certificates. When the certificates are changed,
+	// the managed snapd database must be regenerated
+
+	// When upgrading the base, and when the track is changed
+	if current.Base() != "" && new.Base() != "" {
+		// Non core16 models, if they are not matching, then we should regenerate the database
+		if current.Base() != new.Base() {
+			return true
+		}
+	}
+
+	baseTrack := func(ms *asserts.ModelSnap) string {
+		if ms == nil {
+			return ""
+		}
+		if ms.PinnedTrack != "" {
+			return ms.PinnedTrack
+		}
+		ch, err := channel.ParseVerbatim(ms.DefaultChannel, "-")
+		if err != nil {
+			return ""
+		}
+		return ch.Track
+	}
+	if baseTrack(current.BaseSnap()) != baseTrack(new.BaseSnap()) {
+		return true
+	}
+	return false
+}
+
 func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Model,
 	deviceCtx snapstate.DeviceContext, fromChange string, opts RemodelOptions) ([]*state.TaskSet, error) {
 
@@ -1349,6 +1382,16 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		}
 		tss = append(tss, createRecoveryTasks)
 		recoverySetupTaskID = createRecoveryTasks.Tasks()[0].ID()
+	}
+
+	// When the base of the model is changing, refresh the certificate database managed by
+	// snapd as the new base will likely carry newer certificates.
+	if shouldRegenerateCertificateDatabase(current, new) {
+		updateCertDB := st.NewTask("update-cert-db", i18n.G("Update certificate database"))
+		for _, tsPrev := range tss {
+			updateCertDB.WaitAll(tsPrev)
+		}
+		tss = append(tss, state.NewTaskSet(updateCertDB))
 	}
 
 	// Set the new model assertion - this *must* be the last thing done
@@ -1713,6 +1756,10 @@ type recoverySystemSetup struct {
 	// MarkDefault is set to true if the new recovery system should be marked as
 	// the default recovery system.
 	MarkDefault bool `json:"mark-default,omitempty"`
+	// SeedRefresh is set to true if the recovery system is being created as part
+	// of seed-refresh mode. This enables recording seeded-system state in
+	// finalize.
+	SeedRefresh bool `json:"seed-refresh,omitempty"`
 }
 
 func pickRecoverySystemLabel(labelBase string) (string, error) {
@@ -1757,6 +1804,47 @@ func removeRecoverySystemTasks(st *state.State, label string) (*state.TaskSet, e
 	return state.NewTaskSet(remove), nil
 }
 
+// SeedRefreshTasks returns a [snapstate.SeedRefreshTaskSet] that carries the
+// tasks needed to refresh the seed managed by seed-refresh mode. The caller
+// must provide the tasks IDs that can be used by the seed creation tasks to
+// find the new snaps to include in the seed. Otherwise, already installed snaps
+// will be used to create the seed.
+func SeedRefreshTasks(st *state.State, snapSetupTasks, compSetupTasks []string) (*snapstate.SeedRefreshTaskSet, error) {
+	labelBase := timeNow().Format("20060102")
+	label, err := pickRecoverySystemLabel(labelBase)
+	if err != nil {
+		return nil, fmt.Errorf("cannot select non-conflicting label for recovery system %q: %v", labelBase, err)
+	}
+
+	ts, err := createRecoverySystemTasks(st, label, snapSetupTasks, compSetupTasks, CreateRecoverySystemOptions{
+		TestSystem:  true,
+		MarkDefault: true,
+		SeedRefresh: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var create, finalize *state.Task
+	for _, t := range ts.Tasks() {
+		switch t.Kind() {
+		case "create-recovery-system":
+			create = t
+		case "finalize-recovery-system":
+			finalize = t
+		}
+	}
+
+	if create == nil || finalize == nil {
+		return nil, errors.New("internal error: expected create and finalize recovery system tasks")
+	}
+
+	return &snapstate.SeedRefreshTaskSet{
+		Create:   create,
+		Finalize: finalize,
+	}, nil
+}
+
 func createRecoverySystemTasks(st *state.State, label string, snapSetupTasks, compSetupTasks []string, opts CreateRecoverySystemOptions) (*state.TaskSet, error) {
 	// precondition check, the directory should not exist yet
 	systemDirectory := filepath.Join(boot.InitramfsUbuntuSeedDir, "systems", label)
@@ -1780,6 +1868,7 @@ func createRecoverySystemTasks(st *state.State, label string, snapSetupTasks, co
 		LocalComponents:     opts.LocalComponents,
 		TestSystem:          opts.TestSystem,
 		MarkDefault:         opts.MarkDefault,
+		SeedRefresh:         opts.SeedRefresh,
 	})
 
 	ts := state.NewTaskSet(create)
@@ -1842,6 +1931,10 @@ type CreateRecoverySystemOptions struct {
 	// MarkDefault is set to true if the new recovery system should be marked as
 	// the default recovery system.
 	MarkDefault bool
+
+	// SeedRefresh is set to true if the recovery system was created by
+	// seed-refresh mode and should update seeded-system state in finalize.
+	SeedRefresh bool
 
 	// Offline is true if the recovery system should be created without reaching
 	// out to the store. Offline must be set to true if LocalSnaps is provided.
