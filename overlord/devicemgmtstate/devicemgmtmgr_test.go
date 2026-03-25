@@ -854,7 +854,7 @@ func buildTaskIndex(chg *state.Change) *taskIndex {
 	}
 	for _, t := range chg.Tasks() {
 		var id string
-		err := t.Get("id", &id)
+		err := t.Get("message-id", &id)
 		if err != nil {
 			continue
 		}
