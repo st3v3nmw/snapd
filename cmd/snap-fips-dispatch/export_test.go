@@ -1,8 +1,7 @@
 // -*- Mode: Go; indent-tabs-mode: t -*-
-//go:build !linux
 
 /*
- * Copyright (C) 2024 Canonical Ltd
+ * Copyright (C) 2025 Canonical Ltd
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as
@@ -18,8 +17,16 @@
  *
  */
 
-package snapdtool
+package main
 
-// MaybeCompleteFIPSSetup does nothing.
+import (
+	"github.com/snapcore/snapd/testutil"
+)
 
-func MaybeCompleteFIPSSetup() {}
+var (
+	Run = run
+)
+
+func MockSnapdtoolDispatchWithFIPS(m func(target string) error) (restore func()) {
+	return testutil.Mock(&snapdtoolDispatchWithFIPS, m)
+}
