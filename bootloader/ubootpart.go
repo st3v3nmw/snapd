@@ -32,9 +32,10 @@
 // For security, the kernel command line parameter "snapd_system_disk" restricts which disk
 // snapd will search for the boot state partition.
 //
-// Bootloader selection: Name() returns ubootpartName and gadgets use a ubootpart.conf marker
-// file. This makes ubootpart a first-class bootloader discoverable through the standard
-// bootloader machinery, without special-casing in ForGadget().
+// Bootloader selection: Name() returns ubootpartName and gadgets that use
+// ubootpart have "bootloader: u-boot" and a "role: system-boot-state"
+// partition. This partition in gadget.yaml determines whether snapd uses uboot
+// or ubootpart bootloader code.
 
 package bootloader
 
@@ -46,6 +47,7 @@ import (
 	"github.com/snapcore/snapd/bootloader/efi"
 	"github.com/snapcore/snapd/bootloader/ubootenv"
 	"github.com/snapcore/snapd/dirs"
+	"github.com/snapcore/snapd/gadget"
 	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/osutil/disks"
@@ -66,6 +68,11 @@ const (
 
 	// ubuntuBootStateLabel is the partition label for the boot state partition
 	ubuntuBootStateLabel = "ubuntu-boot-state"
+
+	// UbuntuBootStatePrepareTimeFile is the file name with the content that will
+	// be copied to the system-boot-state partition at image preparation
+	// time. We export it so ubuntu-image can use it.
+	UbuntuBootStatePrepareTimeFile = "ubuntu-boot-state.img"
 )
 
 type ubootpart struct {
@@ -147,7 +154,7 @@ func (u *ubootpart) envDevice() (string, error) {
 		// directory (one level above the seed dir) so the file does not
 		// end up on the ubuntu-seed filesystem. Image builders pick it
 		// up from resolved-content which is populated separately.
-		return filepath.Join(filepath.Dir(u.rootdir), "ubuntu-boot-state.img"), nil
+		return filepath.Join(filepath.Dir(u.rootdir), UbuntuBootStatePrepareTimeFile), nil
 	}
 
 	// At runtime, lazily initialise the disk. Try EFI first, then
@@ -210,7 +217,7 @@ func (u *ubootpart) envDevice() (string, error) {
 
 func (u *ubootpart) Present() (bool, error) {
 	if u.prepareImageTime {
-		envFile := filepath.Join(filepath.Dir(u.rootdir), "ubuntu-boot-state.img")
+		envFile := filepath.Join(filepath.Dir(u.rootdir), UbuntuBootStatePrepareTimeFile)
 		return osutil.FileExists(envFile), nil
 	}
 
@@ -309,4 +316,13 @@ func (u *ubootpart) ExtractRecoveryKernelAssets(recoverySystemDir string, s snap
 
 func (u *ubootpart) RemoveKernelAssets(s snap.PlaceInfo) error {
 	return removeKernelAssetsFromBootDir(u.assetsDir(), s)
+}
+
+func (u *ubootpart) RequiredByGadget(gadgetDir string) bool {
+	gInfo, err := gadget.ReadInfo(gadgetDir, nil)
+	if err != nil {
+		logger.Noticef("while reading gadget.yaml from ubootpart: %v", err)
+		return false
+	}
+	return gInfo.HasBootloader(gadget.BootLoaderUboot) && gInfo.HasRole(gadget.SystemBootState)
 }

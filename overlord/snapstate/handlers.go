@@ -3637,8 +3637,16 @@ func (m *SnapManager) doKillSnapApps(t *state.Task, _ *tomb.Tomb) (retErr error)
 	perfTimings := state.TimingsForTask(t)
 	defer perfTimings.Save(st)
 
+	var hint runinhibit.Hint
+	switch reason {
+	case snap.KillReasonRemove:
+		hint = runinhibit.HintInhibitedForRemove
+	default:
+		return fmt.Errorf("internal error: unexpected kill-reason")
+	}
+
 	inhibitInfo := runinhibit.InhibitInfo{Previous: snapsup.Revision()}
-	if err := runinhibit.LockWithHint(snapName, runinhibit.HintInhibitedForRemove, inhibitInfo, st.Unlocker()); err != nil {
+	if err := runinhibit.LockWithHint(snapName, hint, inhibitInfo, st.Unlocker()); err != nil {
 		return err
 	}
 
