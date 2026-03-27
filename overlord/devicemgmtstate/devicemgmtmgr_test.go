@@ -251,8 +251,6 @@ func (s *deviceMgmtMgrSuite) TestEnsureChangeAlreadyInFlight(c *C) {
 
 	expired := time.Now().Add(-(devicemgmtstate.DefaultExchangeInterval + time.Minute))
 	ms := &devicemgmtstate.DeviceMgmtState{
-		Sequences:        make(map[string]*devicemgmtstate.SequenceState),
-		ReadyResponses:   make(map[string]store.Message),
 		LastExchangeTime: expired,
 	}
 	s.mgr.SetState(ms)
@@ -720,11 +718,10 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 	}
 }
 
-func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
+func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEvictedSequenceRejected(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	baseTime := time.Date(2025, 7, 29, 12, 0, 0, 0, time.UTC)
 	sequences := make(map[string]*devicemgmtstate.SequenceState)
 	sequenceLRU := make([]string, 0, devicemgmtstate.MaxSequences+2)
 	for i := 1; i <= devicemgmtstate.MaxSequences+2; i++ {
@@ -732,11 +729,9 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 		seq := &devicemgmtstate.SequenceState{}
 		for _, seqNum := range []int{1, 2} {
 			msg := makeRequestMessage(baseID, seqNum, "confdb", "")
-			msg.ReceiveTime = baseTime.Add(
-				time.Duration(i)*time.Minute + time.Duration(seqNum)*time.Second,
-			)
 			seq.Messages = append(seq.Messages, msg)
 		}
+
 		sequences[baseID] = seq
 		sequenceLRU = append(sequenceLRU, baseID)
 	}
@@ -764,7 +759,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	seq1 := ms.Sequences["seq-1"]
 	c.Assert(seq1.Messages, HasLen, 1, Commentf("the 2nd message in seq-1 should have been deleted"))
 	c.Check(seq1.Messages[0].Status, Equals, asserts.MessageStatusRejected)
-	c.Check(seq1.Messages[0].Error, Equals, "cannot process message: sequence evicted from cache due to capacity limits")
+	c.Check(seq1.Messages[0].Error, Equals, "cannot process message: sequence evicted due to capacity limits")
 
 	ti := buildTaskIndex(chg)
 	c.Check(ti.validate["seq-1-1"], IsNil)
@@ -777,6 +772,48 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEviction(c *C) {
 	c.Check(seq2.Messages[0].Status, Equals, asserts.MessageStatusRejected)
 
 	c.Check(len(ms.SequenceLRU), Equals, devicemgmtstate.MaxSequences)
+}
+
+func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesBlockedSequenceRejected(c *C) {
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// Build a sequence stuck at a gap: seqNum 1 is missing, messages start at 2
+	msgs := make([]*devicemgmtstate.RequestMessage, devicemgmtstate.MaxBlockedMessagesPerSequence+1)
+	for i := range msgs {
+		msgs[i] = makeRequestMessage("seqA", i+2, "confdb", "")
+	}
+
+	ms := &devicemgmtstate.DeviceMgmtState{
+		Sequences: map[string]*devicemgmtstate.SequenceState{
+			"seqA": {Messages: msgs},
+		},
+		SequenceLRU:    []string{"seqA"},
+		ReadyResponses: make(map[string]store.Message),
+	}
+	s.mgr.SetState(ms)
+
+	chg := s.st.NewChange("test", "test change")
+	dispatch := s.st.NewTask("dispatch-mgmt-messages", "test dispatch-messages task")
+	chg.AddTask(dispatch)
+
+	s.st.Unlock()
+	err := s.mgr.DoDispatchMessages(dispatch, &tomb.Tomb{})
+	s.st.Lock()
+	c.Assert(err, IsNil)
+
+	ms, err = s.mgr.GetState()
+	c.Assert(err, IsNil)
+
+	seqA := ms.Sequences["seqA"]
+	c.Assert(seqA.Messages, HasLen, 1, Commentf("remaining messages should have been deleted"))
+	c.Check(seqA.Messages[0].Status, Equals, asserts.MessageStatusRejected)
+	c.Check(seqA.Messages[0].Error, Equals, "cannot process message: too many messages waiting on missing predecessors in sequence")
+
+	ti := buildTaskIndex(chg)
+	c.Check(ti.queue["seqA-2"], NotNil)
+	c.Check(ti.validate["seqA-2"], IsNil)
+	c.Check(ti.apply["seqA-2"], IsNil)
 }
 
 func (s *deviceMgmtMgrSuite) TestParseRequestMessageInvalid(c *C) {

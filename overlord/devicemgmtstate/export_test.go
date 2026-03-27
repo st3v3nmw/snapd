@@ -34,7 +34,8 @@ var (
 	DefaultExchangeLimit    = defaultExchangeLimit
 	DefaultExchangeInterval = defaultExchangeInterval
 
-	MaxSequences = maxSequences
+	MaxSequences                  = maxSequences
+	MaxBlockedMessagesPerSequence = maxBlockedMessagesPerSequence
 )
 
 type SequenceState = sequenceState

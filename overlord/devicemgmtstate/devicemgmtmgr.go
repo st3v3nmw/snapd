@@ -47,8 +47,8 @@ const (
 	defaultExchangeLimit    = 10
 	defaultExchangeInterval = 6 * time.Hour
 
-	maxSequences           = 256
-	maxMessagesPerSequence = 32
+	maxSequences                  = 256
+	maxBlockedMessagesPerSequence = 8
 )
 
 var (
@@ -365,17 +365,19 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 	}
 
 	chg := t.Change()
+	// Evict oldest sequences when the LRU exceeds capacity.
 	for len(ms.SequenceLRU) > maxSequences {
 		baseID := ms.SequenceLRU[0]
 		ms.SequenceLRU = ms.SequenceLRU[1:]
-		m.rejectSequence(ms, chg, baseID, "cannot process message: sequence evicted from cache due to capacity limits")
+		m.rejectSequence(ms, chg, baseID, "cannot process message: sequence evicted due to capacity limits")
 	}
 
 	for baseID, seq := range ms.Sequences {
-		if len(seq.Messages) > maxMessagesPerSequence {
-			m.rejectSequence(ms, chg, baseID, "cannot process message: too many pending messages in sequence")
-		} else {
-			m.dispatchSequence(t, seq)
+		dispatched := m.dispatchSequence(t, seq)
+		// If nothing was dispatched, the sequence is stuck at a gap (one or more missing predecessors).
+		// Reject if too many messages have accumulated waiting on it.
+		if dispatched == 0 && len(seq.Messages) > maxBlockedMessagesPerSequence {
+			m.rejectSequence(ms, chg, baseID, "cannot process message: too many messages waiting on missing predecessors in sequence")
 		}
 	}
 
@@ -386,8 +388,8 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 
 // dispatchSequence dispatches pending messages in a sequence starting from where
 // it left off, chaining consecutive messages. Gaps in the sequence stop the chain.
-// Messages are assumed to be sorted by SeqNum.
-func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequenceState) {
+// Messages are assumed to be sorted by SeqNum. Returns the number of messages dispatched.
+func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequenceState) int {
 	// Unsequenced messages have SeqNum 0.
 	expectedSeqNum := 0
 	// Sequenced messages resume from where the sequence left off.
@@ -395,6 +397,7 @@ func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequ
 		expectedSeqNum = seq.Applied + 1
 	}
 
+	dispatched := 0
 	awaitTask := dispatchTask
 	for _, msg := range seq.Messages {
 		if msg.ChangeID != "" || msg.Status != "" {
@@ -408,7 +411,10 @@ func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequ
 
 		awaitTask = m.dispatchMessage(awaitTask, msg)
 		expectedSeqNum++
+		dispatched++
 	}
+
+	return dispatched
 }
 
 // dispatchMessage creates the task chain for a single message and returns
