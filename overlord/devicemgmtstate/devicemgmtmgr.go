@@ -372,7 +372,10 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 	for len(ms.SequenceLRU) > maxSequences {
 		baseID := ms.SequenceLRU[0]
 		ms.SequenceLRU = ms.SequenceLRU[1:]
-		m.rejectSequence(ms, chg, baseID, "cannot process message: sequence evicted due to capacity limits")
+		err = m.rejectSequence(ms, chg, baseID, "cannot process message: sequence evicted due to capacity limits")
+		if err != nil {
+			return err
+		}
 	}
 
 	for baseID, seq := range ms.Sequences {
@@ -380,7 +383,10 @@ func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) erro
 		// If nothing was dispatched, the sequence is stuck at a gap (one or more missing predecessors).
 		// Reject if too many messages have accumulated waiting on it.
 		if dispatched == 0 && len(seq.Messages) > maxBlockedMessagesPerSequence {
-			m.rejectSequence(ms, chg, baseID, "cannot process message: too many messages waiting on missing predecessors in sequence")
+			err = m.rejectSequence(ms, chg, baseID, "cannot process message: too many messages waiting on missing predecessors in sequence")
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -403,6 +409,8 @@ func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequ
 	dispatched := 0
 	awaitTask := dispatchTask
 	for _, msg := range seq.Messages {
+		// Skip messages already dispatched to a subsystem chagne (ChangeID set by doApplyMessage)
+		// or that have reached a final status.
 		if msg.ChangeID != "" || msg.Status != "" {
 			continue
 		}
@@ -447,10 +455,10 @@ func (m *DeviceMgmtManager) dispatchMessage(prevTask *state.Task, msg *RequestMe
 
 // rejectSequence rejects the earliest pending message in a sequence and discards
 // the rest. It removes the sequence from the LRU and queues a rejection response.
-func (m *DeviceMgmtManager) rejectSequence(ms *deviceMgmtState, chg *state.Change, baseID, reason string) {
+func (m *DeviceMgmtManager) rejectSequence(ms *deviceMgmtState, chg *state.Change, baseID, reason string) error {
 	seq := ms.Sequences[baseID]
 	if seq == nil || len(seq.Messages) == 0 {
-		return
+		return fmt.Errorf("internal error: rejectSequence called for baseID %q with no pending messages", baseID)
 	}
 
 	earliest := seq.Messages[0]
@@ -465,6 +473,8 @@ func (m *DeviceMgmtManager) rejectSequence(ms *deviceMgmtState, chg *state.Chang
 	queue.Set("message-id", earliest.ID())
 	queue.JoinLane(lane)
 	chg.AddTask(queue)
+
+	return nil
 }
 
 // doValidateMessage performs snapd-level and subsystem-level validation on a message.

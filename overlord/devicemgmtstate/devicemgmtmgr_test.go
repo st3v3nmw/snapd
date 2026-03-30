@@ -127,6 +127,35 @@ func (s *deviceMgmtMgrSuite) mockStore(exchangeMessages func(context.Context, *s
 	snapstate.ReplaceStore(s.st, &mockStore{exchangeMessages: exchangeMessages})
 }
 
+func (s *deviceMgmtMgrSuite) makeStoreMessage(c *C, messageID, token string) store.MessageWithToken {
+	oneHourAgo := time.Now().Add(-time.Hour)
+	tomorrow := oneHourAgo.Add(24 * time.Hour)
+	body := []byte(`{"action": "get", "account": "my-brand", "view": "network/access-wifi"}`)
+	as, err := s.storeStack.Sign(
+		asserts.RequestMessageType,
+		map[string]any{
+			"authority-id": "my-brand",
+			"account-id":   "my-brand",
+			"message-id":   messageID,
+			"message-kind": "confdb",
+			"devices":      []any{"serial-1.my-model.my-brand"},
+			"valid-since":  oneHourAgo.UTC().Format(time.RFC3339),
+			"valid-until":  tomorrow.UTC().Format(time.RFC3339),
+			"timestamp":    oneHourAgo.UTC().Format(time.RFC3339),
+		},
+		body, "",
+	)
+	c.Assert(err, IsNil)
+
+	return store.MessageWithToken{
+		Token: token,
+		Message: store.Message{
+			Format: "assertion",
+			Data:   string(asserts.Encode(as)),
+		},
+	}
+}
+
 func (s *deviceMgmtMgrSuite) settle(c *C) {
 	s.st.Unlock()
 	defer s.st.Lock()
@@ -295,36 +324,8 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesFetchOK(c *C) {
 		c.Check(req.Limit, Equals, devicemgmtstate.DefaultExchangeLimit)
 		c.Check(req.Messages, HasLen, 0)
 
-		oneHourAgo := time.Now().Add(-1 * time.Hour)
-		tomorrow := oneHourAgo.Add(24 * time.Hour)
-
-		body := []byte(`{"action": "get", "account": "my-brand", "view": "network/access-wifi"}`)
-		as, err := s.storeStack.Sign(
-			asserts.RequestMessageType,
-			map[string]any{
-				"authority-id": "my-brand",
-				"account-id":   "my-brand",
-				"message-id":   "someId",
-				"message-kind": "confdb",
-				"devices":      []any{"serial-1.my-model.my-brand"},
-				"valid-since":  oneHourAgo.UTC().Format(time.RFC3339),
-				"valid-until":  tomorrow.UTC().Format(time.RFC3339),
-				"timestamp":    oneHourAgo.UTC().Format(time.RFC3339),
-			},
-			body, "",
-		)
-		c.Assert(err, IsNil)
-
 		return &store.MessageExchangeResponse{
-			Messages: []store.MessageWithToken{
-				{
-					Token: "token-123",
-					Message: store.Message{
-						Format: "assertion",
-						Data:   string(asserts.Encode(as)),
-					},
-				},
-			},
+			Messages:             []store.MessageWithToken{s.makeStoreMessage(c, "someId", "token-123")},
 			TotalPendingMessages: 0,
 		}, nil
 	})
@@ -395,43 +396,14 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesSequenceLRU(c *C) {
 
 	s.mockModel()
 
-	oneHourAgo := time.Now().Add(-time.Hour)
-	tomorrow := oneHourAgo.Add(24 * time.Hour)
-	body := []byte(`{"action": "get", "account": "my-brand", "view": "network/wifi-state"}`)
-
-	makeSeqMsg := func(baseID string, seqNum int) store.MessageWithToken {
-		as, err := s.storeStack.Sign(
-			asserts.RequestMessageType,
-			map[string]any{
-				"authority-id": "my-brand",
-				"account-id":   "my-brand",
-				"message-id":   fmt.Sprintf("%s-%d", baseID, seqNum),
-				"message-kind": "confdb",
-				"devices":      []any{"serial-1.my-model.my-brand"},
-				"valid-since":  oneHourAgo.UTC().Format(time.RFC3339),
-				"valid-until":  tomorrow.UTC().Format(time.RFC3339),
-				"timestamp":    oneHourAgo.UTC().Format(time.RFC3339),
-			},
-			body, "",
-		)
-		c.Assert(err, IsNil)
-		return store.MessageWithToken{
-			Token: fmt.Sprintf("token-%s-%d", baseID, seqNum),
-			Message: store.Message{
-				Format: "assertion",
-				Data:   string(asserts.Encode(as)),
-			},
-		}
-	}
-
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
 		return &store.MessageExchangeResponse{
 			Messages: []store.MessageWithToken{
-				makeSeqMsg("seqA", 1),
-				makeSeqMsg("seqB", 1),
-				makeSeqMsg("seqB", 2),
-				makeSeqMsg("seqC", 1),
-				makeSeqMsg("seqA", 2),
+				s.makeStoreMessage(c, "seqA-1", "token-seqA-1"),
+				s.makeStoreMessage(c, "seqB-1", "token-seqB-1"),
+				s.makeStoreMessage(c, "seqB-2", "token-seqB-2"),
+				s.makeStoreMessage(c, "seqC-1", "token-seqC-1"),
+				s.makeStoreMessage(c, "seqA-2", "token-seqA-2"),
 			},
 		}, nil
 	})
@@ -480,6 +452,37 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesInvalidMessage(c *C) {
 	c.Assert(err, IsNil)
 	c.Check(ms.LastReceivedToken, Equals, "token-123")
 	c.Check(ms.Sequences, HasLen, 0)
+}
+
+func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDuplicateMessage(c *C) {
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	setRemoteMgmtFeatureFlag(c, s.st, true)
+
+	s.mockModel()
+	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
+		msg := s.makeStoreMessage(c, "someId", "token-1")
+		return &store.MessageExchangeResponse{
+			Messages: []store.MessageWithToken{
+				msg,
+				{Token: "token-2", Message: msg.Message},
+			},
+			TotalPendingMessages: 0,
+		}, nil
+	})
+
+	t := s.st.NewTask("exchange-mgmt-messages", "test exchange-mgmt-messages task")
+
+	s.st.Unlock()
+	err := s.mgr.DoExchangeMessages(t, &tomb.Tomb{})
+	s.st.Lock()
+	c.Assert(err, IsNil)
+
+	ms, err := s.mgr.GetState()
+	c.Assert(err, IsNil)
+	// The duplicate should have been dropped, leaving one message in the sequence.
+	c.Assert(ms.Sequences["someId"].Messages, HasLen, 1)
 }
 
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDeviceNotSeeded(c *C) {
