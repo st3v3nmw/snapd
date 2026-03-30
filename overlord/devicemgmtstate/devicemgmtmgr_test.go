@@ -127,6 +127,14 @@ func (s *deviceMgmtMgrSuite) mockStore(exchangeMessages func(context.Context, *s
 	snapstate.ReplaceStore(s.st, &mockStore{exchangeMessages: exchangeMessages})
 }
 
+func (s *deviceMgmtMgrSuite) settle(c *C) {
+	s.st.Unlock()
+	defer s.st.Lock()
+
+	err := s.o.Settle(testutil.HostScaledTimeout(5 * time.Second))
+	c.Assert(err, IsNil)
+}
+
 func (s *deviceMgmtMgrSuite) TestShouldExchangeMessages(c *C) {
 	type test struct {
 		name             string
@@ -258,10 +266,7 @@ func (s *deviceMgmtMgrSuite) TestEnsureChangeAlreadyInFlight(c *C) {
 	chg := s.st.NewChange("device-management-exchange", "Process device management messages")
 	chg.SetStatus(state.DoingStatus)
 
-	s.st.Unlock()
-	err := s.mgr.Ensure()
-	s.st.Lock()
-	c.Assert(err, IsNil)
+	s.settle(c)
 
 	changes := s.st.Changes()
 	c.Assert(changes, HasLen, 1)
@@ -269,11 +274,10 @@ func (s *deviceMgmtMgrSuite) TestEnsureChangeAlreadyInFlight(c *C) {
 }
 
 func (s *deviceMgmtMgrSuite) TestEnsureFeatureDisabled(c *C) {
-	err := s.mgr.Ensure()
-	c.Assert(err, IsNil)
-
 	s.st.Lock()
 	defer s.st.Unlock()
+
+	s.settle(c)
 
 	changes := s.st.Changes()
 	c.Assert(changes, HasLen, 0)
@@ -282,6 +286,8 @@ func (s *deviceMgmtMgrSuite) TestEnsureFeatureDisabled(c *C) {
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesFetchOK(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
+
+	setRemoteMgmtFeatureFlag(c, s.st, true)
 
 	s.mockModel()
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
@@ -322,8 +328,6 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesFetchOK(c *C) {
 			TotalPendingMessages: 0,
 		}, nil
 	})
-
-	setRemoteMgmtFeatureFlag(c, s.st, true)
 
 	t := s.st.NewTask("exchange-mgmt-messages", "test exchange-mgmt-messages task")
 
@@ -374,14 +378,9 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesReplyOK(c *C) {
 	}
 	s.mgr.SetState(ms)
 
-	t := s.st.NewTask("exchange-mgmt-messages", "test exchange-mgmt-messages task")
+	s.settle(c)
 
-	s.st.Unlock()
-	err := s.mgr.DoExchangeMessages(t, &tomb.Tomb{})
-	s.st.Lock()
-	c.Assert(err, IsNil)
-
-	ms, err = s.mgr.GetState()
+	ms, err := s.mgr.GetState()
 	c.Assert(err, IsNil)
 	c.Check(ms.LastReceivedToken, Equals, "")
 	c.Check(ms.ReadyResponses, HasLen, 0)
@@ -392,8 +391,9 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesSequenceLRU(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	s.mockModel()
 	setRemoteMgmtFeatureFlag(c, s.st, true)
+
+	s.mockModel()
 
 	oneHourAgo := time.Now().Add(-time.Hour)
 	tomorrow := oneHourAgo.Add(24 * time.Hour)
@@ -454,6 +454,8 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesInvalidMessage(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
+	setRemoteMgmtFeatureFlag(c, s.st, true)
+
 	s.mockModel()
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
 		return &store.MessageExchangeResponse{
@@ -470,14 +472,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesInvalidMessage(c *C) {
 		}, nil
 	})
 
-	setRemoteMgmtFeatureFlag(c, s.st, true)
-
-	t := s.st.NewTask("exchange-mgmt-messages", "test exchange-mgmt-messages task")
-
-	s.st.Unlock()
-	err := s.mgr.DoExchangeMessages(t, &tomb.Tomb{})
-	s.st.Lock()
-	c.Assert(err, IsNil)
+	s.settle(c)
 
 	c.Check(s.logbuf.String(), testutil.Contains, "cannot parse request-message with token token-123")
 
@@ -491,6 +486,8 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDeviceNotSeeded(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
+	setRemoteMgmtFeatureFlag(c, s.st, true)
+
 	s.AddCleanup(snapstatetest.MockDeviceContext(nil))
 	s.st.Set("seeded", false)
 
@@ -501,14 +498,13 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDeviceNotSeeded(c *C) {
 		return nil, fmt.Errorf("call not expected")
 	})
 
-	t := s.st.NewTask("exchange-mgmt-messages", "test exchange-mgmt-messages task")
+	s.settle(c)
 
-	s.st.Unlock()
-	err := s.mgr.DoExchangeMessages(t, &tomb.Tomb{})
-	s.st.Lock()
+	changes := s.st.Changes()
+	c.Assert(changes, HasLen, 1)
 	c.Assert(
-		err, ErrorMatches,
-		"too early for operation, device not yet seeded or device model not acknowledged",
+		changes[0].Err(), ErrorMatches,
+		"(?s).*too early for operation, device not yet seeded or device model not acknowledged.*",
 	)
 }
 
@@ -516,19 +512,18 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesStoreError(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
+	setRemoteMgmtFeatureFlag(c, s.st, true)
+
 	s.mockModel()
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
 		return nil, fmt.Errorf("network timeout")
 	})
 
-	setRemoteMgmtFeatureFlag(c, s.st, true)
+	s.settle(c)
 
-	t := s.st.NewTask("exchange-mgmt-messages", "test exchange-mgmt-messages task")
-
-	s.st.Unlock()
-	err := s.mgr.DoExchangeMessages(t, &tomb.Tomb{})
-	s.st.Lock()
-	c.Assert(err, ErrorMatches, "network timeout")
+	changes := s.st.Changes()
+	c.Assert(changes, HasLen, 1)
+	c.Assert(changes[0].Err(), ErrorMatches, "(?s).*network timeout.*")
 }
 
 func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesUnsequenced(c *C) {

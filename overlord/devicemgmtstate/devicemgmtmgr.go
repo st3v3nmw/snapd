@@ -182,7 +182,6 @@ func (ms *deviceMgmtState) enqueueRequests(pollResp *store.MessageExchangeRespon
 	}
 
 	ms.ReadyResponses = make(map[string]store.Message)
-	ms.LastExchangeTime = timeNow()
 }
 
 // removeSequenceFromLRU removes a sequence from the LRU list, if present.
@@ -321,6 +320,11 @@ func (m *DeviceMgmtManager) doExchangeMessages(t *state.Task, tomb *tomb.Tomb) e
 		return err
 	}
 
+	defer func() {
+		ms.LastExchangeTime = timeNow()
+		m.setState(ms)
+	}()
+
 	deviceCtx, err := snapstate.DevicePastSeeding(m.state, nil)
 	if err != nil {
 		return err
@@ -349,7 +353,6 @@ func (m *DeviceMgmtManager) doExchangeMessages(t *state.Task, tomb *tomb.Tomb) e
 	}
 
 	ms.enqueueRequests(pollResp)
-	m.setState(ms)
 
 	return nil
 }
