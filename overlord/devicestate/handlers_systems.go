@@ -275,6 +275,10 @@ func (m *DeviceManager) doRemoveRecoverySystem(t *state.Task, _ *tomb.Tomb) erro
 		return fmt.Errorf("cannot remove recovery system %q: %w", setup.Label, err)
 	}
 
+	if err := dropSeededSystemIfSeedRefresh(st, setup.Label); err != nil {
+		return fmt.Errorf("cannot update seeded systems after removing recovery system %q: %w", setup.Label, err)
+	}
+
 	t.SetStatus(state.DoneStatus)
 
 	return nil
@@ -515,6 +519,27 @@ func (m *DeviceManager) doFinalizeTriedRecoverySystem(t *state.Task, _ *tomb.Tom
 			return err
 		}
 
+		// in seed refresh mode, this task also marks the newly created system
+		// as the most recently seeded system. during a remodel, this happens
+		// during set-model.
+		if setup.SeedRefresh {
+			now := time.Now()
+			addedSeededSystem := &seededSystem{
+				System:      label,
+				Model:       model.Model(),
+				BrandID:     model.BrandID(),
+				Revision:    model.Revision(),
+				Timestamp:   model.Timestamp(),
+				SeedTime:    now,
+				SeedRefresh: true,
+			}
+			t.Set("added-seeded-system", addedSeededSystem)
+
+			if err := m.recordSeededSystem(st, addedSeededSystem); err != nil {
+				return fmt.Errorf("cannot record a new seeded system: %v", err)
+			}
+		}
+
 		// tried systems should be a one item list, we can clear it now
 		st.Set("tried-systems", nil)
 	}
@@ -635,6 +660,22 @@ func (m *DeviceManager) undoFinalizeTriedRecoverySystem(t *state.Task, _ *tomb.T
 		// this undoes what happens in markSystemRecoveryCapableAndDefault
 		if err := unmarkSystemRecoveryCapableAndDefault(t, label); err != nil {
 			return err
+		}
+
+		// undo the seeded-systems update done in finalize for seed-refresh mode
+		if setup.SeedRefresh {
+			var addedSeededSystem seededSystem
+			err := t.Get("added-seeded-system", &addedSeededSystem)
+			if err != nil && !errors.Is(err, state.ErrNoState) {
+				return err
+			}
+
+			// if we never set added-seeded-system, then there is nothing to do
+			if err == nil {
+				if err := dropExactSeededSystem(st, addedSeededSystem); err != nil {
+					return err
+				}
+			}
 		}
 	}
 

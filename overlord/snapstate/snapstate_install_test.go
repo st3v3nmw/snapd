@@ -2737,6 +2737,7 @@ epoch: 1*
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "mock/x2"),
 			unlinkSkipBinaries: refreshAppAwarenessUX,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -2881,8 +2882,9 @@ epoch: 1*
 			name: "mock",
 		},
 		{
-			op:   "unlink-snap",
-			path: filepath.Join(dirs.SnapMountDir, "mock/100001"),
+			op:          "unlink-snap",
+			path:        filepath.Join(dirs.SnapMountDir, "mock/100001"),
+			inhibitHint: "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -6615,6 +6617,9 @@ func (s *snapmgrTestSuite) TestInstallPathManySplitEssentialWithSharedBase(c *C)
 	s.state.Lock()
 	defer s.state.Unlock()
 
+	restore := release.MockOnClassic(true)
+	s.AddCleanup(restore)
+
 	sharedBase := true
 	paths, infos := s.setupSplitRefreshAppDependsOnModelBase(c, sharedBase)
 
@@ -6644,6 +6649,9 @@ func (s *snapmgrTestSuite) TestInstallPathManySplitEssentialWithSharedBase(c *C)
 func (s *snapmgrTestSuite) TestInstallPathManySplitEssentialWithoutSharedBased(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
+
+	restore := release.MockOnClassic(true)
+	s.AddCleanup(restore)
 
 	sharedBase := false
 	paths, infos := s.setupSplitRefreshAppDependsOnModelBase(c, sharedBase)

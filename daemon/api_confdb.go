@@ -89,7 +89,14 @@ func getView(c *Command, r *http.Request, _ *auth.UserState) Response {
 		return toAPIError(err)
 	}
 
-	chgID, err := confdbstateLoadConfdbAsync(st, view, keys, constraints)
+	ucred, err := ucrednetGet(r.RemoteAddr)
+	if err != nil {
+		return toAPIError(err)
+	}
+
+	// TODO: set timeout parsed from URL query parameter
+	ctx := r.Context()
+	chgID, err := confdbstateReadConfdb(ctx, st, view, keys, constraints, int(ucred.Uid))
 	if err != nil {
 		return toAPIError(err)
 	}
@@ -151,21 +158,14 @@ func setView(c *Command, r *http.Request, _ *auth.UserState) Response {
 		return toAPIError(err)
 	}
 
-	tx, commitTxFunc, err := confdbstateGetTransactionToSet(nil, st, view)
+	// TODO: set timeout parsed from URL query parameter
+	ctx := r.Context()
+	changeID, err := confdbstateWriteConfdb(ctx, st, view, action.Values)
 	if err != nil {
 		return toAPIError(err)
 	}
 
-	err = confdbstateSetViaView(tx, view, action.Values)
-	if err != nil {
-		return toAPIError(err)
-	}
-
-	changeID, _, err := commitTxFunc()
-	if err != nil {
-		return toAPIError(err)
-	}
-
+	ensureStateSoon(st)
 	return AsyncResponse(nil, changeID)
 }
 

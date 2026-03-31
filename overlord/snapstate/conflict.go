@@ -151,11 +151,21 @@ func changeIsSnapdDowngrade(st *state.State, chg *state.Change) (bool, error) {
 	return res == 1, nil
 }
 
+func changeCreatesRecoverySystem(chg *state.Change) bool {
+	for _, t := range chg.Tasks() {
+		if t.Kind() == "create-recovery-system" {
+			return true
+		}
+	}
+	return false
+}
+
 func checkChangeConflictExclusiveKinds(st *state.State, newExclusiveChangeKind, ignoreChangeID string) error {
 	for _, chg := range st.Changes() {
-		if chg.Status().Ready() {
+		if chg.Status().Ready() || (ignoreChangeID != "" && chg.ID() == ignoreChangeID) {
 			continue
 		}
+
 		switch chg.Kind() {
 		case "transition-ubuntu-core":
 			return &ChangeConflictError{
@@ -170,18 +180,12 @@ func checkChangeConflictExclusiveKinds(st *state.State, newExclusiveChangeKind, 
 				ChangeID:   chg.ID(),
 			}
 		case "remodel":
-			if ignoreChangeID != "" && chg.ID() == ignoreChangeID {
-				continue
-			}
 			return &ChangeConflictError{
 				Message:    "remodeling in progress, no other changes allowed until this is done",
 				ChangeKind: "remodel",
 				ChangeID:   chg.ID(),
 			}
 		case "create-recovery-system":
-			if ignoreChangeID != "" && chg.ID() == ignoreChangeID {
-				continue
-			}
 			return &ChangeConflictError{
 				Message:    "creating recovery system in progress, no other changes allowed until this is done",
 				ChangeKind: "create-recovery-system",
@@ -191,41 +195,50 @@ func checkChangeConflictExclusiveKinds(st *state.State, newExclusiveChangeKind, 
 			// TODO: it is not totally necessary for this to be an exclusive
 			// change, we should probably make more fine-grained exclusivity
 			// rules
-			if ignoreChangeID != "" && chg.ID() == ignoreChangeID {
-				continue
-			}
 			return &ChangeConflictError{
 				Message:    "removing recovery system in progress, no other changes allowed until this is done",
 				ChangeKind: "remove-recovery-system",
 				ChangeID:   chg.ID(),
 			}
 		case "revert-snap", "refresh-snap":
-			// Snapd downgrades are exclusive changes
-			if ignoreChangeID != "" && chg.ID() == ignoreChangeID {
-				continue
-			}
-			if downgrading, err := changeIsSnapdDowngrade(st, chg); err != nil {
+			downgrading, err := changeIsSnapdDowngrade(st, chg)
+			if err != nil {
 				return err
-			} else if !downgrading {
-				continue
 			}
-			return &ChangeConflictError{
-				Message:    "snapd downgrade in progress, no other changes allowed until this is done",
-				ChangeKind: chg.Kind(),
-				ChangeID:   chg.ID(),
-			}
-		default:
-			if newExclusiveChangeKind != "" {
-				// we want to run a new exclusive change, but other
-				// changes are in progress already
-				msg := fmt.Sprintf("other changes in progress (conflicting change %q), change %q not allowed until they are done", chg.Kind(),
-					newExclusiveChangeKind)
+
+			if downgrading {
 				return &ChangeConflictError{
-					Message:    msg,
+					Message:    "snapd downgrade in progress, no other changes allowed until this is done",
 					ChangeKind: chg.Kind(),
 					ChangeID:   chg.ID(),
 				}
 			}
+
+			if changeCreatesRecoverySystem(chg) {
+				// TODO: make this less strict once we model conflicts for
+				// seed-managing changes more precisely
+				return &ChangeConflictError{
+					Message:    "seed refresh in progress, no other changes allowed until this is done",
+					ChangeKind: chg.Kind(),
+					ChangeID:   chg.ID(),
+				}
+			}
+		}
+
+		// caller didn't specify the new change kind. in that case, the new
+		// change isn't exclusive
+		if newExclusiveChangeKind == "" {
+			continue
+		}
+
+		// we want to run a new exclusive change, but other changes are in
+		// progress already
+		msg := fmt.Sprintf("other changes in progress (conflicting change %q), change %q not allowed until they are done", chg.Kind(),
+			newExclusiveChangeKind)
+		return &ChangeConflictError{
+			Message:    msg,
+			ChangeKind: chg.Kind(),
+			ChangeID:   chg.ID(),
 		}
 	}
 	return nil

@@ -40,8 +40,6 @@ import (
 )
 
 var (
-	cgroupProcessPathInTrackingCgroup = cgroup.ProcessPathInTrackingCgroup
-
 	interfacesRequestsCmd = &Command{
 		Path:    "/v2/interfaces/requests",
 		POST:    postInterfacesRequests,
@@ -91,6 +89,10 @@ var (
 		// authentication.
 		WriteAccess: interfaceOpenAccess{Interfaces: []string{"snap-interfaces-requests-control"}},
 	}
+)
+
+var (
+	cgroupProcessPathInTrackingCgroup = cgroup.ProcessPathInTrackingCgroup
 )
 
 // getUserID returns the UID specified by the user-id parameter of the query,

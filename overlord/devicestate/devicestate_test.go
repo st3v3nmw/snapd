@@ -2191,6 +2191,140 @@ func (s *startOfOperationTimeSuite) TestStartOfOperationErrorIfPreseed(c *C) {
 	c.Assert(err, ErrorMatches, `internal error: unexpected call to StartOfOperationTime in preseed mode`)
 }
 
+func (s *deviceMgrSuite) TestCreateSeedRefreshTasks(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	restore := devicestate.MockTimeNow(func() time.Time {
+		return time.Date(2026, 2, 27, 8, 30, 0, 0, time.UTC)
+	})
+	defer restore()
+
+	tSnap1 := s.state.NewTask("fake-download", "...")
+	tSnap2 := s.state.NewTask("fake-download", "...")
+	tComp1 := s.state.NewTask("fake-download-component", "...")
+
+	seedTS, err := devicestate.SeedRefreshTasks(s.state, []string{tSnap1.ID(), tSnap2.ID()}, []string{tComp1.ID()})
+	c.Assert(err, IsNil)
+
+	c.Assert(seedTS.Create.Kind(), Equals, "create-recovery-system")
+	c.Assert(seedTS.Finalize.Kind(), Equals, "finalize-recovery-system")
+	c.Check(seedTS.Remove, HasLen, 0)
+
+	const expectedLabel = "20260227"
+
+	var systemSetupData map[string]any
+	c.Assert(seedTS.Create.Get("recovery-system-setup", &systemSetupData), IsNil)
+	c.Assert(systemSetupData, DeepEquals, map[string]any{
+		"label":                 expectedLabel,
+		"directory":             filepath.Join(boot.InitramfsUbuntuSeedDir, "systems", expectedLabel),
+		"snap-setup-tasks":      []any{tSnap1.ID(), tSnap2.ID()},
+		"component-setup-tasks": []any{tComp1.ID()},
+		"mark-default":          true,
+		"seed-refresh":          true,
+		"test-system":           true,
+	})
+
+	var setupTaskID string
+	c.Assert(seedTS.Finalize.Get("recovery-system-setup-task", &setupTaskID), IsNil)
+	c.Check(setupTaskID, Equals, seedTS.Create.ID())
+
+	var boundary restart.RestartBoundaryDirection
+	c.Assert(seedTS.Create.Get("restart-boundary", &boundary), IsNil)
+	c.Check(boundary, Equals, restart.RestartBoundaryDirectionDo)
+}
+
+func (s *deviceMgrSuite) TestCreateSeedRefreshTasksUsesNextAvailableLabel(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	restore := devicestate.MockTimeNow(func() time.Time {
+		return time.Date(2026, 2, 27, 9, 0, 0, 0, time.UTC)
+	})
+	defer restore()
+
+	const labelBase = "20260227"
+	systemsDir := filepath.Join(boot.InitramfsUbuntuSeedDir, "systems")
+	c.Assert(os.MkdirAll(filepath.Join(systemsDir, labelBase), 0755), IsNil)
+	c.Assert(os.MkdirAll(filepath.Join(systemsDir, labelBase+"-1"), 0755), IsNil)
+	c.Assert(os.MkdirAll(filepath.Join(systemsDir, labelBase+"-2"), 0755), IsNil)
+
+	tSnap := s.state.NewTask("fake-download", "...")
+
+	seedTS, err := devicestate.SeedRefreshTasks(s.state, []string{tSnap.ID()}, nil)
+	c.Assert(err, IsNil)
+
+	c.Assert(seedTS.Create.Kind(), Equals, "create-recovery-system")
+	c.Assert(seedTS.Finalize.Kind(), Equals, "finalize-recovery-system")
+	c.Check(seedTS.Remove, HasLen, 0)
+
+	const expectedLabel = labelBase + "-3"
+
+	var systemSetupData map[string]any
+	c.Assert(seedTS.Create.Get("recovery-system-setup", &systemSetupData), IsNil)
+	c.Check(systemSetupData["label"], Equals, expectedLabel)
+	c.Check(systemSetupData["directory"], Equals, filepath.Join(boot.InitramfsUbuntuSeedDir, "systems", expectedLabel))
+	c.Check(systemSetupData["snap-setup-tasks"], DeepEquals, []any{tSnap.ID()})
+	c.Check(systemSetupData["mark-default"], Equals, true)
+	c.Check(systemSetupData["seed-refresh"], Equals, true)
+	c.Check(systemSetupData["test-system"], Equals, true)
+}
+
+func (s *deviceMgrSuite) TestCreateSeedRefreshTasksAddsPruneTasks(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	restore := devicestate.MockTimeNow(func() time.Time {
+		return time.Date(2026, 2, 27, 9, 0, 0, 0, time.UTC)
+	})
+	defer restore()
+
+	s.state.Set("seeded-systems", []devicestate.SeededSystem{
+		{System: "current-seed-refresh", SeedRefresh: true},
+		{System: "non-seed-refresh"},
+		{System: "old-seed-refresh-1", SeedRefresh: true},
+		{System: "old-seed-refresh-2", SeedRefresh: true},
+	})
+
+	seedTS, err := devicestate.SeedRefreshTasks(s.state, []string{s.state.NewTask("fake-download", "...").ID()}, nil)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS.Remove, HasLen, 2)
+	c.Check(seedTS.Remove[0].WaitTasks(), DeepEquals, []*state.Task{seedTS.Finalize})
+	c.Check(seedTS.Remove[1].WaitTasks(), DeepEquals, []*state.Task{seedTS.Finalize})
+
+	var labels []string
+	for _, remove := range seedTS.Remove {
+		var setup map[string]any
+		c.Assert(remove.Get("remove-recovery-system-setup", &setup), IsNil)
+		labels = append(labels, setup["label"].(string))
+	}
+
+	c.Check(labels, testutil.DeepUnsortedMatches, []string{"old-seed-refresh-1", "old-seed-refresh-2"})
+}
+
+func (s *deviceMgrSuite) TestRemoveRecoverySystemBlockedWhenAnotherRemovalRunning(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	other := s.state.NewTask("remove-recovery-system", "remove one")
+	otherRemove := s.state.NewTask("remove-recovery-system", "remove two")
+	otherRemove.SetStatus(state.DoingStatus)
+
+	c.Assert(devicestate.RemoveRecoverySystemBlocked(other, []*state.Task{otherRemove}), Equals, true)
+}
+
+func (s *deviceMgrSuite) TestRemoveRecoverySystemDoesNotBlockOtherTasks(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	remove := s.state.NewTask("remove-recovery-system", "remove one")
+	other := s.state.NewTask("other-task", "other")
+	other.SetStatus(state.DoingStatus)
+
+	c.Assert(devicestate.RemoveRecoverySystemBlocked(remove, []*state.Task{other}), Equals, false)
+	c.Assert(devicestate.RemoveRecoverySystemBlocked(other, []*state.Task{remove}), Equals, false)
+}
+
 func (s *deviceMgrSuite) TestCanAutoRefreshNTP(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
