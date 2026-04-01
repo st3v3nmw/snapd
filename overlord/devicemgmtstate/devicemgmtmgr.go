@@ -89,11 +89,13 @@ type RequestMessage struct {
 	ValidUntil  time.Time `json:"valid-until"`
 	Body        string    `json:"body"`
 
-	ReceiveTime time.Time             `json:"receive-time"`
-	Status      asserts.MessageStatus `json:"status,omitempty"`
-	Error       string                `json:"error,omitempty"`
-	// Subsystem change applying this message.
-	ChangeID string `json:"change-id,omitempty"`
+	ReceiveTime time.Time `json:"receive-time"`
+
+	Dispatched    bool   `json:"dispatched"`
+	ApplyChangeID string `json:"apply-change-id,omitempty"`
+
+	Status asserts.MessageStatus `json:"status,omitempty"`
+	Error  string                `json:"error,omitempty"`
 }
 
 // ID returns the full message identifier `BaseID[-SeqNum]`.
@@ -409,9 +411,8 @@ func (m *DeviceMgmtManager) dispatchSequence(dispatchTask *state.Task, seq *sequ
 	dispatched := 0
 	awaitTask := dispatchTask
 	for _, msg := range seq.Messages {
-		// Skip messages already dispatched to a subsystem chagne (ChangeID set by doApplyMessage)
-		// or that have reached a final status.
-		if msg.ChangeID != "" || msg.Status != "" {
+		// Skip messages already dispatched or that have reached a final status.
+		if msg.Dispatched || msg.Status != "" {
 			continue
 		}
 
@@ -449,6 +450,8 @@ func (m *DeviceMgmtManager) dispatchMessage(prevTask *state.Task, msg *RequestMe
 	addTask("validate-mgmt-message", fmt.Sprintf("Validate message with id %q", msg.ID()))
 	addTask("apply-mgmt-message", fmt.Sprintf("Apply message with id %q", msg.ID()))
 	addTask("queue-mgmt-response", fmt.Sprintf("Queue response for message with id %q", msg.ID()))
+
+	msg.Dispatched = true
 
 	return prevTask
 }

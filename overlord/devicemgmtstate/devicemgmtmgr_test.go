@@ -485,6 +485,43 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDuplicateMessage(c *C) {
 	c.Assert(ms.Sequences["someId"].Messages, HasLen, 1)
 }
 
+func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesIdempotence(c *C) {
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	setRemoteMgmtFeatureFlag(c, s.st, true)
+
+	s.mockModel()
+	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
+		return &store.MessageExchangeResponse{
+			Messages: []store.MessageWithToken{
+				s.makeStoreMessage(c, "someId", "token-1"),
+			},
+		}, nil
+	})
+
+	wayback := time.Date(2025, 6, 14, 12, 0, 0, 0, time.UTC)
+	restoreTime := devicemgmtstate.MockTimeNow(wayback)
+	defer restoreTime()
+
+	s.settle(c)
+
+	ms, err := s.mgr.GetState()
+	c.Assert(err, IsNil)
+	c.Assert(ms.Sequences["someId"].Messages, HasLen, 1)
+
+	// Advance time past the exchange interval to trigger a second exchange.
+	restoreTime()
+	restoreTime = devicemgmtstate.MockTimeNow(wayback.Add(2 * devicemgmtstate.DefaultExchangeInterval))
+	defer restoreTime()
+
+	s.settle(c)
+
+	ms, err = s.mgr.GetState()
+	c.Assert(err, IsNil)
+	c.Assert(ms.Sequences["someId"].Messages, HasLen, 1)
+}
+
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDeviceNotSeeded(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
@@ -535,9 +572,9 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesUnsequenced(c *C) {
 
 	ms := &devicemgmtstate.DeviceMgmtState{
 		Sequences: map[string]*devicemgmtstate.SequenceState{
-			"msg1": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg1", 0, "confdb", "16384")}},
-			"msg2": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg2", 0, "confdb", "")}},
-			"msg3": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg3", 0, "confdb", "")}},
+			"msg1": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg1", 0, "confdb", true)}},
+			"msg2": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg2", 0, "confdb", false)}},
+			"msg3": {Messages: []*devicemgmtstate.RequestMessage{makeRequestMessage("msg3", 0, "confdb", false)}},
 		},
 		ReadyResponses: make(map[string]store.Message),
 	}
@@ -575,9 +612,9 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		{
 			name: "consecutive from start",
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("seqA", 1, "confdb", ""),
-				makeRequestMessage("seqA", 2, "confdb", ""),
-				makeRequestMessage("seqA", 3, "confdb", ""),
+				makeRequestMessage("seqA", 1, "confdb", false),
+				makeRequestMessage("seqA", 2, "confdb", false),
+				makeRequestMessage("seqA", 3, "confdb", false),
 			},
 			expectedChain: map[string]string{
 				"seqA-1": "<dispatch>",
@@ -588,10 +625,10 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		{
 			name: "gap stops chaining",
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("seqA", 1, "confdb", ""),
-				makeRequestMessage("seqA", 2, "confdb", ""),
-				makeRequestMessage("seqA", 4, "confdb", ""), // 3 is missing
-				makeRequestMessage("seqA", 5, "confdb", ""),
+				makeRequestMessage("seqA", 1, "confdb", false),
+				makeRequestMessage("seqA", 2, "confdb", false),
+				makeRequestMessage("seqA", 4, "confdb", false), // 3 is missing
+				makeRequestMessage("seqA", 5, "confdb", false),
 			},
 			expectedChain: map[string]string{
 				"seqA-1": "<dispatch>",
@@ -602,8 +639,8 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 			name:      "resume from last message applied",
 			sequences: map[string]int{"seqA": 2},
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("seqA", 3, "confdb", ""),
-				makeRequestMessage("seqA", 4, "confdb", ""),
+				makeRequestMessage("seqA", 3, "confdb", false),
+				makeRequestMessage("seqA", 4, "confdb", false),
 			},
 			expectedChain: map[string]string{
 				"seqA-3": "<dispatch>",
@@ -613,16 +650,16 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		{
 			name: "no dispatchable messages",
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("seqA", 5, "confdb", ""), // can't start here
+				makeRequestMessage("seqA", 5, "confdb", false), // can't start here
 			},
 		},
 		{
 			name:      "already dispatched skipped",
 			sequences: map[string]int{"seqA": 1},
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("seqA", 1, "confdb", "16384"), // already dispatched
-				makeRequestMessage("seqA", 2, "confdb", ""),
-				makeRequestMessage("seqA", 3, "confdb", ""),
+				makeRequestMessage("seqA", 1, "confdb", true), // already dispatched
+				makeRequestMessage("seqA", 2, "confdb", false),
+				makeRequestMessage("seqA", 3, "confdb", false),
 			},
 			expectedChain: map[string]string{
 				"seqA-2": "<dispatch>",
@@ -632,10 +669,10 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		{
 			name: "mixed sequenced and unsequenced",
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("uns1", 0, "confdb", ""),
-				makeRequestMessage("uns2", 0, "confdb", ""),
-				makeRequestMessage("seqA", 1, "confdb", ""),
-				makeRequestMessage("seqA", 2, "confdb", ""),
+				makeRequestMessage("uns1", 0, "confdb", false),
+				makeRequestMessage("uns2", 0, "confdb", false),
+				makeRequestMessage("seqA", 1, "confdb", false),
+				makeRequestMessage("seqA", 2, "confdb", false),
 			},
 			expectedChain: map[string]string{
 				"uns1":   "<dispatch>",
@@ -647,10 +684,10 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		{
 			name: "multiple independent sequences",
 			pendingRequests: []*devicemgmtstate.RequestMessage{
-				makeRequestMessage("seqA", 1, "confdb", ""),
-				makeRequestMessage("seqA", 2, "confdb", ""),
-				makeRequestMessage("seqB", 1, "confdb", ""),
-				makeRequestMessage("seqB", 2, "confdb", ""),
+				makeRequestMessage("seqA", 1, "confdb", false),
+				makeRequestMessage("seqA", 2, "confdb", false),
+				makeRequestMessage("seqB", 1, "confdb", false),
+				makeRequestMessage("seqB", 2, "confdb", false),
 			},
 			expectedChain: map[string]string{
 				"seqA-1": "<dispatch>",
@@ -726,7 +763,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEvictedSequenceRejected(c *C)
 		baseID := fmt.Sprintf("seq-%d", i)
 		seq := &devicemgmtstate.SequenceState{}
 		for _, seqNum := range []int{1, 2} {
-			msg := makeRequestMessage(baseID, seqNum, "confdb", "")
+			msg := makeRequestMessage(baseID, seqNum, "confdb", false)
 			seq.Messages = append(seq.Messages, msg)
 		}
 
@@ -779,7 +816,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesBlockedSequenceRejected(c *C)
 	// Build a sequence stuck at a gap: seqNum 1 is missing, messages start at 2
 	msgs := make([]*devicemgmtstate.RequestMessage, devicemgmtstate.MaxBlockedMessagesPerSequence+1)
 	for i := range msgs {
-		msgs[i] = makeRequestMessage("seqA", i+2, "confdb", "")
+		msgs[i] = makeRequestMessage("seqA", i+2, "confdb", false)
 	}
 
 	ms := &devicemgmtstate.DeviceMgmtState{
@@ -812,6 +849,55 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesBlockedSequenceRejected(c *C)
 	c.Check(ti.queue["seqA-2"], NotNil)
 	c.Check(ti.validate["seqA-2"], IsNil)
 	c.Check(ti.apply["seqA-2"], IsNil)
+}
+
+func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotence(c *C) {
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	setRemoteMgmtFeatureFlag(c, s.st, true)
+
+	s.mockModel()
+	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
+		return &store.MessageExchangeResponse{
+			Messages: []store.MessageWithToken{
+				s.makeStoreMessage(c, "someId", "token-1"),
+			},
+		}, nil
+	})
+
+	wayback := time.Date(2025, 6, 14, 12, 0, 0, 0, time.UTC)
+	restoreTime := devicemgmtstate.MockTimeNow(wayback)
+	defer restoreTime()
+
+	s.settle(c)
+
+	changes := s.st.Changes()
+	c.Assert(changes, HasLen, 1)
+	// exchange, dispatch + 1 * (validate, apply, queue)
+	c.Assert(changes[0].Tasks(), HasLen, 5)
+
+	ti := buildTaskIndex(changes[0])
+	c.Check(ti.apply["someId"], NotNil)
+	c.Check(ti.apply["someId"], NotNil)
+	c.Check(ti.queue["someId"], NotNil)
+
+	// Advance time past the exchange interval to trigger a second exchange and dispatch.
+	restoreTime()
+	restoreTime = devicemgmtstate.MockTimeNow(wayback.Add(2 * devicemgmtstate.DefaultExchangeInterval))
+	defer restoreTime()
+
+	s.settle(c)
+
+	changes = s.st.Changes()
+	c.Assert(changes, HasLen, 2)
+	c.Assert(changes[1].Tasks(), HasLen, 2)
+
+	// The second dispatch should not have created new task chains for already-dispatched messages.
+	ti = buildTaskIndex(changes[1])
+	c.Check(ti.validate["someId"], IsNil)
+	c.Check(ti.apply["someId"], IsNil)
+	c.Check(ti.queue["someId"], IsNil)
 }
 
 func (s *deviceMgmtMgrSuite) TestParseRequestMessageInvalid(c *C) {
@@ -857,7 +943,7 @@ func (s *deviceMgmtMgrSuite) TestParseRequestMessageInvalid(c *C) {
 	}
 }
 
-func makeRequestMessage(baseID string, seqNum int, kind string, changeID string) *devicemgmtstate.RequestMessage {
+func makeRequestMessage(baseID string, seqNum int, kind string, dispatched bool) *devicemgmtstate.RequestMessage {
 	wayback := time.Date(2025, 7, 29, 12, 0, 0, 0, time.UTC)
 
 	return &devicemgmtstate.RequestMessage{
@@ -871,7 +957,7 @@ func makeRequestMessage(baseID string, seqNum int, kind string, changeID string)
 		ValidUntil:  wayback.Add(24 * time.Hour),
 		Body:        `{"action": "get", "account": "my-brand", "view": "network/wifi-state"}`,
 		ReceiveTime: wayback.Add(6 * time.Hour),
-		ChangeID:    changeID,
+		Dispatched:  dispatched,
 	}
 }
 
