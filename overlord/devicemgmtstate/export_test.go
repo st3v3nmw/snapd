@@ -33,10 +33,15 @@ var (
 
 	DefaultExchangeLimit    = defaultExchangeLimit
 	DefaultExchangeInterval = defaultExchangeInterval
-
-	MaxSequences                  = maxSequences
-	MaxBlockedMessagesPerSequence = maxBlockedMessagesPerSequence
 )
+
+func MockMaxSequences(n int) func() {
+	return testutil.Mock(&maxSequences, n)
+}
+
+func MockMaxBlockedMessagesPerSequence(n int) func() {
+	return testutil.Mock(&maxBlockedMessagesPerSequence, n)
+}
 
 type SequenceState = sequenceState
 

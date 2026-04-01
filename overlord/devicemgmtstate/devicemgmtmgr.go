@@ -46,13 +46,13 @@ const (
 
 	defaultExchangeLimit    = 10
 	defaultExchangeInterval = 6 * time.Hour
-
-	maxSequences                  = 256
-	maxBlockedMessagesPerSequence = 8
 )
 
 var (
 	timeNow = time.Now
+
+	maxSequences                  = 256
+	maxBlockedMessagesPerSequence = 8
 
 	deviceMgmtExchangeChangeKind = swfeats.RegisterChangeKind("device-management-exchange")
 )
