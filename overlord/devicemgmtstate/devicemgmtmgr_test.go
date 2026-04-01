@@ -170,8 +170,7 @@ func (s *deviceMgmtMgrSuite) settle(c *C) {
 }
 
 func (s *deviceMgmtMgrSuite) TestShouldExchangeMessages(c *C) {
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	type test struct {
 		name             string
@@ -290,8 +289,7 @@ func (s *deviceMgmtMgrSuite) TestEnsureChangeAlreadyInFlight(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	setRemoteMgmtFeatureFlag(c, s.st, true)
 
@@ -528,8 +526,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesIdempotence(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	setRemoteMgmtFeatureFlag(c, s.st, true)
 
@@ -549,9 +546,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesIdempotence(c *C) {
 	c.Assert(ms.Sequences["someId"].Messages, HasLen, 1)
 
 	// Advance time past the exchange interval to trigger a second exchange.
-	restoreTime()
-	restoreTime = devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval))
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval)))
 
 	s.settle(c)
 
@@ -564,8 +559,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesUnsequenced(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	setRemoteMgmtFeatureFlag(c, s.st, true)
 
@@ -583,8 +577,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesUnsequenced(c *C) {
 	s.settle(c)
 
 	// Exchange 2: msg1 is dedup'd by exchange; msg2 and msg3 are new.
-	restoreTime()
-	restoreTime = devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval))
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval)))
 
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
 		return &store.MessageExchangeResponse{
@@ -791,8 +784,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEvictedSequenceRejected(c *C)
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	const maxSequences = 4
 	s.AddCleanup(devicemgmtstate.MockMaxSequences(maxSequences))
@@ -851,8 +843,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesBlockedSequenceRejected(c *C)
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	const maxBlockedMessagesPerSequence = 4
 	s.AddCleanup(devicemgmtstate.MockMaxBlockedMessagesPerSequence(maxBlockedMessagesPerSequence))
@@ -894,8 +885,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotence(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	restoreTime := devicemgmtstate.MockTimeNow(fixedTestTime)
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
 
 	setRemoteMgmtFeatureFlag(c, s.st, true)
 
@@ -921,9 +911,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotence(c *C) {
 	c.Check(ti.queue["someId"], NotNil)
 
 	// Advance time past the exchange interval to trigger a second exchange and dispatch.
-	restoreTime()
-	restoreTime = devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval))
-	defer restoreTime()
+	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval)))
 
 	s.settle(c)
 
