@@ -319,6 +319,41 @@ func (s *deviceMgmtMgrSuite) TestEnsureFeatureDisabled(c *C) {
 	c.Assert(changes, HasLen, 0)
 }
 
+func (s *deviceMgmtMgrSuite) TestEnsureFeatureDisabledWithReadyResponses(c *C) {
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	s.mockModel()
+	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
+		c.Check(req.Limit, Equals, 0)
+		c.Check(req.Messages, HasLen, 1)
+
+		return &store.MessageExchangeResponse{}, nil
+	})
+
+	ms := &devicemgmtstate.DeviceMgmtState{
+		Sequences: make(map[string]*devicemgmtstate.SequenceState),
+		ReadyResponses: map[string]store.Message{
+			"someId": {Format: "assertion", Data: "response-data"},
+		},
+	}
+	s.mgr.SetState(ms)
+
+	s.settle(c)
+
+	changes := changesOfKind(s.st.Changes(), "device-management-exchange")
+	c.Assert(changes, HasLen, 1)
+	c.Check(changes[0].Err(), IsNil)
+
+	c.Assert(changes[0].Tasks(), HasLen, 2)
+
+	ms, err := s.mgr.GetState()
+	c.Assert(err, IsNil)
+	c.Check(ms.LastReceivedToken, Equals, "")
+	c.Check(ms.ReadyResponses, HasLen, 0)
+	c.Check(ms.Sequences, HasLen, 0)
+}
+
 func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesFetchOK(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
@@ -402,9 +437,11 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesSequenceLRU(c *C) {
 			Messages: []store.MessageWithToken{
 				s.makeStoreMessage(c, "seqA-1", "token-seqA-1"),
 				s.makeStoreMessage(c, "seqB-1", "token-seqB-1"),
+				s.makeStoreMessage(c, "uns7", "token-uns1"),
 				s.makeStoreMessage(c, "seqB-2", "token-seqB-2"),
 				s.makeStoreMessage(c, "seqC-1", "token-seqC-1"),
 				s.makeStoreMessage(c, "seqA-2", "token-seqA-2"),
+				s.makeStoreMessage(c, "uns8", "token-uns2"),
 			},
 		}, nil
 	})
@@ -522,7 +559,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesStoreError(c *C) {
 	c.Assert(changes[0].Tasks(), HasLen, 2)
 }
 
-func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesIdempotence(c *C) {
+func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesIdempotent(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
@@ -534,6 +571,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesIdempotence(c *C) {
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
 		return &store.MessageExchangeResponse{
 			Messages: []store.MessageWithToken{
+				// deliver the same message twice
 				s.makeStoreMessage(c, "someId", "token-1"),
 			},
 		}, nil
@@ -694,6 +732,18 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 			},
 		},
 		{
+			name: "message with final status is skipped and blocks successor",
+			pendingRequests: []*devicemgmtstate.RequestMessage{
+				func() *devicemgmtstate.RequestMessage {
+					msg := makeRequestMessage("seqA-1", "confdb", false)
+					msg.Status = asserts.MessageStatusRejected
+					return msg
+				}(),
+				makeRequestMessage("seqA-2", "confdb", false),
+			},
+			expectedChain: map[string]string{},
+		},
+		{
 			name: "mixed sequenced and unsequenced",
 			pendingRequests: []*devicemgmtstate.RequestMessage{
 				makeRequestMessage("uns1", "confdb", false),
@@ -836,7 +886,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesEvictedSequenceRejected(c *C)
 	c.Assert(seqB.Messages, HasLen, 1, Commentf("the 2nd message in seqB should have been deleted"))
 	c.Check(seqB.Messages[0].Status, Equals, asserts.MessageStatusRejected)
 
-	c.Check(len(ms.SequenceLRU), Equals, maxSequences)
+	c.Check(ms.SequenceLRU, DeepEquals, []string{"seqC", "seqD", "seqE", "seqF"})
 }
 
 func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesBlockedSequenceRejected(c *C) {
@@ -881,7 +931,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesBlockedSequenceRejected(c *C)
 	c.Check(ti.apply["seqA-2"], IsNil)
 }
 
-func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotence(c *C) {
+func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotent(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
@@ -893,6 +943,7 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotence(c *C) {
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
 		return &store.MessageExchangeResponse{
 			Messages: []store.MessageWithToken{
+				// deliver the same message twice
 				s.makeStoreMessage(c, "someId", "token-1"),
 			},
 		}, nil
