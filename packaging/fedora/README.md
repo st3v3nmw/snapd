@@ -49,7 +49,7 @@ podman run \
     -v "snapd-gomod-cache:/var/cache/gomod:Z" \
     -w /build \
     registry.fedoraproject.org/fedora:latest \
-    /bin/bash -x -u
+    /bin/bash -x -e -u
 ```
 
 ## Host Script
@@ -80,9 +80,12 @@ chmod 1777 /var/cache/gomod
 export GOMODCACHE=/var/cache/gomod
 
 # Install bootstrap packages.
-dnf --assumeyes install --setopt=install_weak_deps=False --setopt=keepcache=True \
+BASH_XTRACEFD= dnf --assumeyes install --setopt=install_weak_deps=False --setopt=keepcache=True \
     bash coreutils findutils gawk git gzip make rpm-build \
     rpm-devel systemd-rpm-macros tar xz golang
+
+# Copy packaging files to the build directory.
+install -t /build/SPECS/ /src/packaging/fedora/snapd.spec
 
 # Determine the version of the package.
 version=$(rpmspec -q --qf "%{VERSION}\n" /build/SPECS/snapd.spec | head -n1)
@@ -106,13 +109,9 @@ tar -C /src -c \
 # Create the no-vendor and only-vendor source archives.
 ( cd /src-rw && ./packaging/pack-source -v "$version" -o /build/SOURCES )
 
-# Copy packaging files to the build directory.
-ls -lh /build
-install -t /build/SPECS/ /src/packaging/fedora/snapd.spec
-
 # Discover and install build dependencies.
 rpmspec -q --buildrequires /build/SPECS/snapd.spec >/tmp/buildreqs.txt
-xargs -r -d "\n" dnf --assumeyes install --setopt=keepcache=True </tmp/buildreqs.txt
+BASH_XTRACEFD= xargs -r -d "\n" dnf --assumeyes install --setopt=keepcache=True </tmp/buildreqs.txt
 
 # Create a non-root build user.
 useradd -m builder

@@ -58,7 +58,7 @@ podman run \
     -v "snapd-gomod-cache:/var/cache/gomod" \
     -w /build \
     docker.io/ubuntu:noble \
-    /bin/bash -x -u
+    /bin/bash -x -e -u
 ```
 
 ## Host Script
@@ -133,7 +133,9 @@ tar -C /src -c \
 # Unpack the source archive and install the packaging directory.
 tar -Jxf /build/snapd_"$version".no-vendor.tar.xz -C /build
 tar -Jxf /build/snapd_"$version".only-vendor.tar.xz -C /build
-cp -a /src/packaging/ubuntu-16.04 /build/snapd-"$version"/debian
+# The ubuntu-16.04 directory contains .build/ which would be copied recursively, exclude it by using a glob.
+mkdir /build/snapd-"$version"/debian
+cp -a /src/packaging/ubuntu-16.04/* /build/snapd-"$version"/debian
 
 # Discover and install build dependencies.
 DEBIAN_FRONTEND=noninteractive apt-get --yes build-dep /build/snapd-"$version"
