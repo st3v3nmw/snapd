@@ -56,8 +56,21 @@ type snapInstallTaskSet struct {
 	snapsup *SnapSetup
 
 	beforeLocalSystemModificationsTasks []*state.Task
+	mountSnap                           *state.Task
 	upToLinkSnapAndBeforeReboot         []*state.Task
 	afterLinkSnapAndPostReboot          []*state.Task
+}
+
+func (sts snapInstallTaskSet) firstLocalMod() *state.Task {
+	if sts.mountSnap != nil {
+		return sts.mountSnap
+	}
+
+	if len(sts.upToLinkSnapAndBeforeReboot) == 0 {
+		panic("internal error: cannot find first local modification task")
+	}
+
+	return sts.upToLinkSnapAndBeforeReboot[0]
 }
 
 // snapInstallChoreographer orchestrates the construction of a task graph for
@@ -162,12 +175,7 @@ func (sc *snapInstallChoreographer) BeforeLocalSystemMod(st *state.State, s *tas
 }
 
 func (sc *snapInstallChoreographer) UpToLinkSnapAndBeforeReboot(st *state.State, s *taskChainSpan, ic installContext) ([]*state.Task, error) {
-	// mount
-	if !sc.revisionIsPresent() {
-		mount := st.NewTask("mount-snap", fmt.Sprintf(
-			i18n.G("Mount snap %q%s"), sc.snapsup.InstanceName(), sc.revisionString()))
-		s.Append(mount)
-	} else if sc.snapsup.Flags.RemoveSnapPath {
+	if sc.revisionIsPresent() && sc.snapsup.Flags.RemoveSnapPath {
 		// If the revision is local, we will not need the temporary snap. This
 		// can happen when e.g. side-loading a local revision again. The
 		// SnapPath is only needed in the "mount-snap" handler and that is
@@ -248,10 +256,14 @@ func (sc *snapInstallChoreographer) UpToLinkSnapAndBeforeReboot(st *state.State,
 		s.Append(copyData)
 	}
 
-	// security
-	setupSecurity := st.NewTask("setup-profiles", fmt.Sprintf(
-		i18n.G("Setup snap %q%s security profiles"), sc.snapsup.InstanceName(), sc.revisionString()))
-	s.Append(setupSecurity)
+	// Insert the pre-link preparation phase as setup-profiles in
+	// prepare-only mode. This keeps task kinds backward-compatible
+	// for downgrades while preserving the split behavior.
+	prepareSecurity := st.NewTask("setup-profiles", fmt.Sprintf(
+		i18n.G("Prepare snap %q%s for security profile setup"),
+		sc.snapsup.InstanceName(), sc.revisionString()))
+	prepareSecurity.Set("prepare-profiles", true)
+	s.Append(prepareSecurity)
 
 	// finalize (wrappers+current symlink)
 	//
@@ -617,6 +629,16 @@ func (sc *snapInstallChoreographer) choreograph(st *state.State, ic installConte
 		return snapInstallTaskSet{}, err
 	}
 
+	// mount-snap will be the first task after local modifications, if it is
+	// needed. we keep a pointer to mount-snap specifically so that single-reboot
+	// coordination can orchestrate all mount early in the refresh
+	var mountSnap *state.Task
+	if !sc.revisionIsPresent() {
+		mountSnap = st.NewTask("mount-snap", fmt.Sprintf(
+			i18n.G("Mount snap %q%s"), sc.snapsup.InstanceName(), sc.revisionString()))
+		b.Append(mountSnap)
+	}
+
 	upToLinkSnapAndBeforeReboot, err := sc.UpToLinkSnapAndBeforeReboot(st, b.OpenSpan(), ic)
 	if err != nil {
 		return snapInstallTaskSet{}, err
@@ -638,6 +660,7 @@ func (sc *snapInstallChoreographer) choreograph(st *state.State, ic installConte
 		snapsup: sc.snapsup,
 
 		beforeLocalSystemModificationsTasks: beforeLocalSystemMods,
+		mountSnap:                           mountSnap,
 		upToLinkSnapAndBeforeReboot:         upToLinkSnapAndBeforeReboot,
 		afterLinkSnapAndPostReboot:          afterLinkSnapAndPostReboot,
 	}, nil

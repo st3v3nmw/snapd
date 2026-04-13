@@ -63,6 +63,12 @@ func (s *apparmorpromptingSuite) SetUpTest(c *C) {
 
 	s.st = state.New(nil)
 	s.defaultUser = 1000
+
+	currSession := prompting.IDType(0x12345)
+	restore := apparmorprompting.MockReadOrAssignUserSessionID(func(rdb *requestrules.RuleDB, user uint32) (prompting.IDType, error) {
+		return currSession, nil
+	})
+	s.AddCleanup(restore)
 }
 
 func requestWithReplyChan(req *prompting.Request) (*prompting.Request, chan []string) {
@@ -1852,7 +1858,7 @@ func (s *apparmorpromptingSuite) TestListenerReadyNotCausesPromptsHandleReadying
 	select {
 	case <-mgr.Ready():
 		c.Errorf("manager unexpectedly readied even though other requests were outstanding, even before listener signalled ready")
-	case <-time.After(10 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond):
 		// all good
 	}
 
@@ -1863,7 +1869,7 @@ func (s *apparmorpromptingSuite) TestListenerReadyNotCausesPromptsHandleReadying
 	select {
 	case <-mgr.Ready():
 		c.Errorf("manager unexpectedly readied even though other requests were outstanding")
-	case <-time.After(10 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond):
 		// all good
 	}
 
