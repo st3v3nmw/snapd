@@ -935,46 +935,61 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesIdempotent(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime))
-
-	setRemoteMgmtFeatureFlag(c, s.st, true)
-
-	s.mockModel()
-	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
-		return &store.MessageExchangeResponse{
-			Messages: []store.MessageWithToken{
-				// deliver the same message twice
-				s.makeStoreMessage(c, "someId", "token-1"),
+	ms := &devicemgmtstate.DeviceMgmtState{
+		Sequences: map[string]*devicemgmtstate.SequenceState{
+			"msg1": {
+				Messages: []*devicemgmtstate.RequestMessage{
+					{
+						AccountID:   "my-brand",
+						AuthorityID: "my-brand",
+						BaseID:      "msg1",
+						Kind:        "confdb",
+						Devices:     []string{"serial-1.my-model.my-brand"},
+						ValidSince:  fixedTestTime,
+						ValidUntil:  fixedTestTime.Add(24 * time.Hour),
+						Body:        `{"action": "get", "account": "my-brand", "view": "network/wifi-state"}`,
+					},
+				},
 			},
-		}, nil
-	})
+			"msg2": {
+				Messages: []*devicemgmtstate.RequestMessage{
+					{
+						AccountID:   "my-brand",
+						AuthorityID: "my-brand",
+						BaseID:      "msg2",
+						Kind:        "confdb",
+						Devices:     []string{"serial-1.my-model.my-brand"},
+						ValidSince:  fixedTestTime,
+						ValidUntil:  fixedTestTime.Add(24 * time.Hour),
+						Body:        `{"action": "get", "account": "my-brand", "view": "network/wifi-state"}`,
+					},
+				},
+			},
+		},
+	}
+	s.mgr.SetState(ms)
+
+	chg := s.st.NewChange("test", "test change")
+	for i := 1; i <= 3; i++ {
+		t := s.st.NewTask("dispatch-mgmt-messages", fmt.Sprintf("test dispatch %d", i))
+		chg.AddTask(t)
+	}
 
 	s.settle(c)
 
-	changes := changesOfKind(s.st.Changes(), "device-management-exchange")
-	c.Assert(changes, HasLen, 1)
-	// exchange, dispatch + 1 * (validate, apply, queue)
-	c.Assert(changes[0].Tasks(), HasLen, 5)
+	c.Check(chg.Status(), Equals, state.DoneStatus)
 
-	ti := buildTaskIndex(changes[0])
-	c.Check(ti.apply["someId"], NotNil)
-	c.Check(ti.apply["someId"], NotNil)
-	c.Check(ti.queue["someId"], NotNil)
+	// Each message should have been dispatched exactly once:
+	// 3 dispatch tasks + 2 messages * 3 tasks each = 9 tasks.
+	c.Assert(chg.Tasks(), HasLen, 9)
 
-	// Advance time past the exchange interval to trigger a second exchange and dispatch.
-	s.AddCleanup(devicemgmtstate.MockTimeNow(fixedTestTime.Add(2 * devicemgmtstate.DefaultExchangeInterval)))
-
-	s.settle(c)
-
-	changes = changesOfKind(s.st.Changes(), "device-management-exchange")
-	c.Assert(changes, HasLen, 2)
-	c.Assert(changes[1].Tasks(), HasLen, 2)
-
-	// The second dispatch should not have created new task chains for already-dispatched messages.
-	ti = buildTaskIndex(changes[1])
-	c.Check(ti.validate["someId"], IsNil)
-	c.Check(ti.apply["someId"], IsNil)
-	c.Check(ti.queue["someId"], IsNil)
+	ti := buildTaskIndex(chg)
+	c.Check(ti.validate["msg1"], NotNil)
+	c.Check(ti.apply["msg1"], NotNil)
+	c.Check(ti.queue["msg1"], NotNil)
+	c.Check(ti.validate["msg2"], NotNil)
+	c.Check(ti.apply["msg2"], NotNil)
+	c.Check(ti.queue["msg2"], NotNil)
 }
 
 func (s *deviceMgmtMgrSuite) TestParseRequestMessageInvalid(c *C) {

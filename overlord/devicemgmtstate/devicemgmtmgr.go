@@ -91,8 +91,7 @@ type RequestMessage struct {
 
 	ReceiveTime time.Time `json:"receive-time"`
 
-	Dispatched    bool   `json:"dispatched"`
-	ApplyChangeID string `json:"apply-change-id,omitempty"`
+	Dispatched bool `json:"dispatched"`
 
 	Status asserts.MessageStatus `json:"status,omitempty"`
 	Error  string                `json:"error,omitempty"`
