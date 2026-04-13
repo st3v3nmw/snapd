@@ -804,22 +804,33 @@ func (s *deviceMgmtMgrSuite) TestDoDispatchMessagesSequenced(c *C) {
 		dispatchTask := s.st.NewTask("dispatch-mgmt-messages", "test dispatch-messages task")
 		chg.AddTask(dispatchTask)
 
+		alreadyDispatched := make(map[string]bool)
+		for _, msg := range tt.pendingRequests {
+			if msg.Dispatched {
+				alreadyDispatched[msg.ID()] = true
+			}
+		}
+
 		s.st.Unlock()
 		err := s.mgr.DoDispatchMessages(dispatchTask, &tomb.Tomb{})
 		s.st.Lock()
 		c.Assert(err, IsNil, cmt)
 
-		dispatched := make([]string, 0, len(tt.expectedChain))
-		for id := range tt.expectedChain {
-			dispatched = append(dispatched, id)
-		}
+		ms, err = s.mgr.GetState()
+		c.Assert(err, IsNil, cmt)
 
 		var notDispatched []string
-		for _, seq := range sequences {
+		dispatched := make([]string, 0, len(tt.expectedChain))
+		for _, seq := range ms.Sequences {
 			for _, msg := range seq.Messages {
-				if _, ok := tt.expectedChain[msg.ID()]; !ok {
+				_, inChain := tt.expectedChain[msg.ID()]
+				if inChain {
+					dispatched = append(dispatched, msg.ID())
+				} else {
 					notDispatched = append(notDispatched, msg.ID())
 				}
+
+				c.Check(msg.Dispatched, Equals, alreadyDispatched[msg.ID()] || inChain, Commentf("%s: %s", tt.name, msg.ID()))
 			}
 		}
 
