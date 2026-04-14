@@ -447,18 +447,19 @@ func MockSecurityProfilesDiscardLate(fn func(snapName string, rev snap.Revision,
 type HoldState = holdState
 
 var (
-	HoldDurationLeft           = holdDurationLeft
-	LastRefreshed              = lastRefreshed
-	PruneRefreshCandidates     = pruneRefreshCandidates
-	UpdateRefreshCandidates    = updateRefreshCandidates
-	ResetGatingForRefreshed    = resetGatingForRefreshed
-	PruneGating                = pruneGating
-	PruneSnapsHold             = pruneSnapsHold
-	CreateGateAutoRefreshHooks = createGateAutoRefreshHooks
-	AutoRefreshPhase1          = autoRefreshPhase1
-	RefreshRetain              = refreshRetain
-	RefreshCheck               = refreshAppsCheck
-	AffectsRunningHooks        = affectsRunningHooks
+	HoldDurationLeft                     = holdDurationLeft
+	LastRefreshed                        = lastRefreshed
+	PruneRefreshCandidates               = pruneRefreshCandidates
+	UpdateRefreshCandidates              = updateRefreshCandidates
+	ResetGatingForRefreshed              = resetGatingForRefreshed
+	PruneGating                          = pruneGating
+	PruneSnapsHold                       = pruneSnapsHold
+	CreateGateAutoRefreshHooks           = createGateAutoRefreshHooks
+	AutoRefreshPhase1                    = autoRefreshPhase1
+	RefreshRetain                        = refreshRetain
+	RefreshCheck                         = refreshAppsCheck
+	AffectsRunningHooks                  = affectsRunningHooks
+	ShouldScheduleUpdateCertDBForRefresh = shouldScheduleUpdateCertDBForRefresh
 
 	ExcludeFromRefreshAppAwareness = excludeFromRefreshAppAwareness
 )
