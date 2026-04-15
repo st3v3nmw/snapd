@@ -28,6 +28,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/snapcore/snapd/asserts"
@@ -64,7 +66,7 @@ type MessageHandler interface {
 	Validate(st *state.State, msg *RequestMessage) error
 
 	// Apply processes a request-message and returns a change ID.
-	Apply(st *state.State, reqAs *RequestMessage) (changeID string, err error)
+	Apply(st *state.State, msg *RequestMessage) (changeID string, err error)
 
 	// BuildResponse converts a completed change into a response body and status.
 	BuildResponse(chg *state.Change) (body map[string]any, status asserts.MessageStatus)
@@ -91,7 +93,8 @@ type RequestMessage struct {
 
 	ReceiveTime time.Time `json:"receive-time"`
 
-	Dispatched bool `json:"dispatched"`
+	Dispatched    bool   `json:"dispatched"`
+	ApplyChangeID string `json:"apply-change-id,omitempty"`
 
 	Status asserts.MessageStatus `json:"status,omitempty"`
 	Error  string                `json:"error,omitempty"`
@@ -138,9 +141,33 @@ type deviceMgmtState struct {
 	LastExchangeTime time.Time `json:"last-exchange-time"`
 }
 
-// enqueueRequests queues incoming request messages for processing
+// getRequestMessage retrieves a request message from the state.
+func (ms *deviceMgmtState) getRequestMessage(id string) (*RequestMessage, error) {
+	baseID, seqStr, hasSeq := strings.Cut(id, "-")
+	seqNum := 0
+	if hasSeq {
+		seqNum, _ = strconv.Atoi(seqStr)
+	}
+
+	seq := ms.Sequences[baseID]
+	if seq == nil {
+		return nil, fmt.Errorf("cannot find sequence %q", baseID)
+	}
+
+	// TODO:GOVERSION:1.21: replace with slices.BinarySearchFunc
+	i := sort.Search(len(seq.Messages), func(i int) bool {
+		return seq.Messages[i].SeqNum >= seqNum
+	})
+	if i < len(seq.Messages) && seq.Messages[i].SeqNum == seqNum {
+		return seq.Messages[i], nil
+	}
+
+	return nil, fmt.Errorf("cannot find message %q", id)
+}
+
+// enqueueRequestMessages queues incoming request messages for processing
 // and updates polling state accordingly.
-func (ms *deviceMgmtState) enqueueRequests(pollResp *store.MessageExchangeResponse) {
+func (ms *deviceMgmtState) enqueueRequestMessages(pollResp *store.MessageExchangeResponse) {
 	for _, msg := range pollResp.Messages {
 		reqMsg, err := parseRequestMessage(msg.Message)
 		if err != nil {
@@ -353,7 +380,7 @@ func (m *DeviceMgmtManager) doExchangeMessages(t *state.Task, tomb *tomb.Tomb) e
 		return err
 	}
 
-	ms.enqueueRequests(pollResp)
+	ms.enqueueRequestMessages(pollResp)
 
 	return nil
 }
@@ -487,7 +514,50 @@ func (m *DeviceMgmtManager) doValidateMessage(t *state.Task, _ *tomb.Tomb) error
 
 // doApplyMessage dispatches the message to its subsystem handler for processing.
 func (m *DeviceMgmtManager) doApplyMessage(t *state.Task, _ *tomb.Tomb) error {
-	// TODO: implement this task, no-op for now.
+	m.state.Lock()
+	defer m.state.Unlock()
+
+	ms, err := m.getState()
+	if err != nil {
+		return err
+	}
+
+	var msgID string
+	err = t.Get("message-id", &msgID)
+	if err != nil {
+		return err
+	}
+
+	msg, err := ms.getRequestMessage(msgID)
+	if err != nil {
+		return err
+	}
+
+	if msg.Error != "" || msg.ApplyChangeID != "" {
+		// No-op if the message failed earlier in the pipeline or was already applied.
+		return nil
+	}
+
+	handler, ok := m.handlers[msg.Kind]
+	if !ok {
+		msg.Status = asserts.MessageStatusError
+		msg.Error = fmt.Sprintf("cannot find handler for message kind %q", msg.Kind)
+
+		m.setState(ms)
+
+		return nil
+	}
+
+	chgID, err := handler.Apply(m.state, msg)
+	if err != nil {
+		msg.Status = asserts.MessageStatusError
+		msg.Error = fmt.Sprintf("cannot apply message: %v", err)
+	} else {
+		msg.ApplyChangeID = chgID
+	}
+
+	m.setState(ms)
+
 	return nil
 }
 
