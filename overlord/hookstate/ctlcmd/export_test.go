@@ -22,6 +22,7 @@ package ctlcmd
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/snapcore/snapd/asserts"
 	"github.com/snapcore/snapd/asserts/snapasserts"
@@ -51,6 +52,8 @@ var (
 )
 
 type KmodCommand = kmodCommand
+type IsReadyCommand = isReadyCommand
+type ChangeRateLimitKey = changeRateLimitKey
 
 func MockKmodCheckConnection(f func(*hookstate.Context, string, []string) error) (restore func()) {
 	r := testutil.Backup(&kmodCheckConnection)
@@ -209,4 +212,11 @@ func MockConfdbstateReadConfdb(f func(*hookstate.Context, *confdb.View, []string
 	return func() {
 		confdbstateReadConfdb = old
 	}
+}
+
+// TODO:GOVERSION: use time bubbles once project is updated to Go 1.26
+func MockTimeAfter(f func(time.Duration) <-chan time.Time) (restore func()) {
+	old := timeAfter
+	timeAfter = f
+	return func() { timeAfter = old }
 }
