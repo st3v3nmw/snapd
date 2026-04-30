@@ -237,24 +237,37 @@ func defaultPrereqSnapsChannel() string {
 	return channel
 }
 
+func maybeFindTaskInChangeForSnap(chg *state.Change, kind, snapName string) (*state.Task, error) {
+	for _, t := range chg.Tasks() {
+		if t.Status().Ready() || t.Kind() != kind {
+			continue
+		}
+
+		snapsup, err := TaskSnapSetup(t)
+		if err != nil {
+			return nil, err
+		}
+		if snapsup.InstanceName() == snapName {
+			return t, nil
+		}
+	}
+
+	return nil, nil
+}
+
 func findLinkSnapTaskForSnap(st *state.State, snapName string) (*state.Task, error) {
 	for _, chg := range st.Changes() {
 		if chg.IsReady() {
 			continue
 		}
-		for _, tc := range chg.Tasks() {
-			if tc.Status().Ready() {
-				continue
-			}
-			if tc.Kind() == "link-snap" {
-				snapsup, err := TaskSnapSetup(tc)
-				if err != nil {
-					return nil, err
-				}
-				if snapsup.InstanceName() == snapName {
-					return tc, nil
-				}
-			}
+
+		t, err := maybeFindTaskInChangeForSnap(chg, "link-snap", snapName)
+		if err != nil {
+			return nil, err
+		}
+
+		if t != nil {
+			return t, nil
 		}
 	}
 
@@ -558,19 +571,6 @@ func updatePrereqIfOutdated(t *state.Task, snapName string, contentAttrs []strin
 		return nil, err
 	}
 
-	// TODO:SEEDREFRESH: lift this restriction. this can currently be avoided by
-	// ensuring that the content-provider prereq is a part of the original
-	// refresh. without this guard, the create-recovery-system task will not
-	// know about this incoming snap, and the seed won't end up using this new
-	// revision of the content-provider.
-	if changeCreatesRecoverySystem(t.Change()) {
-		for _, sn := range deviceCtx.Model().AllSnaps() {
-			if snapName == sn.Name {
-				return nil, errors.New("cannot update seed while also automatically updating content provider")
-			}
-		}
-	}
-
 	// TODO: as a temporary workaround for a bug that occurs when a snap updates
 	// a prereq, we disable rerefreshes.
 	//
@@ -616,6 +616,10 @@ func updatePrereqIfOutdated(t *state.Task, snapName string, contentAttrs []strin
 		// content provider is (for now) a soft dependency
 		t.Logf("cannot update %q, will not have required content %q: %s", snapName, strings.Join(contentAttrs, ", "), err)
 		return nil, nil
+	}
+
+	if err := maybeMergeLateSeedRefreshPrereq(t.Change(), deviceCtx, snapName, ts); err != nil {
+		return nil, err
 	}
 
 	return ts, nil
