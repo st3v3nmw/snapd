@@ -299,3 +299,66 @@ func (s *installSuite) TestInstallCommandBadCompName(c *C) {
 func (s *installSuite) TestRemoveCommandBadCompName(c *C) {
 	s.testMgmntCommandBadCompName(c, "remove")
 }
+
+func (s *installSuite) TestNoWaitNonEphemeralReturnsError(c *C) {
+	for _, cmd := range []string{"install", "remove"} {
+		s.st.Lock()
+		task := s.st.NewTask("test", "test task")
+		s.st.Unlock()
+
+		switch cmd {
+		case "install":
+			restore := ctlcmd.MockSnapstateInstallComponentsFunc(func(ctx context.Context, st *state.State, names []string, info *snap.Info, vsets *snapasserts.ValidationSets, opts snapstate.Options) ([]*state.TaskSet, error) {
+				return []*state.TaskSet{state.NewTaskSet(task)}, nil
+			})
+			defer restore()
+		case "remove":
+			restore := ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, snapName string, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
+				return []*state.TaskSet{state.NewTaskSet(task)}, nil
+			})
+			defer restore()
+		}
+
+		_, _, err := ctlcmd.Run(s.mockContext, []string{cmd, "+comp1", "--no-wait"}, 0, nil)
+		c.Assert(err, ErrorMatches, "internal error: cannot run snap management command asynchronously from a non-ephemeral context", Commentf("cmd: %s", cmd))
+	}
+}
+
+func (s *installSuite) TestNoWaitInstallAndRemoveCommands(c *C) {
+	for _, cmd := range []string{"install", "remove"} {
+		s.st.Lock()
+		task := s.st.NewTask("test", "test task")
+		setup := &hookstate.HookSetup{Snap: "test-snap", Revision: snap.R(1)}
+		s.st.Unlock()
+
+		switch cmd {
+		case "install":
+			restore := ctlcmd.MockSnapstateInstallComponentsFunc(func(ctx context.Context, st *state.State, names []string, info *snap.Info, vsets *snapasserts.ValidationSets, opts snapstate.Options) ([]*state.TaskSet, error) {
+				c.Check(names, DeepEquals, []string{"comp1"})
+				c.Check(opts, DeepEquals, snapstate.Options{ExpectOneSnap: true})
+				return []*state.TaskSet{state.NewTaskSet(task)}, nil
+			})
+			defer restore()
+		case "remove":
+			restore := ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, snapName string, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
+				c.Check(compNames, DeepEquals, []string{"comp1"})
+				c.Check(opts, DeepEquals, snapstate.RemoveComponentsOpts{RefreshProfile: true})
+				return []*state.TaskSet{state.NewTaskSet(task)}, nil
+			})
+			defer restore()
+		}
+
+		var err error
+		s.mockContext, err = hookstate.NewContext(nil, s.st, setup, s.mockHandler, "")
+		c.Assert(err, IsNil)
+
+		stdout, _, err := ctlcmd.Run(s.mockContext, []string{cmd, "+comp1", "--no-wait"}, 0, nil)
+		c.Assert(err, IsNil)
+		changeID := string(stdout)
+		c.Assert(changeID, Not(Equals), "")
+
+		s.st.Lock()
+		c.Check(task.Change().ID(), Equals, changeID)
+		s.st.Unlock()
+	}
+}
