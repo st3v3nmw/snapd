@@ -19,17 +19,26 @@
 
 package seclog
 
-// nopLogger provides a no-operation [SecurityLogger] implementation.
-type nopLogger struct{}
+import (
+	"sync/atomic"
 
-// Ensure [nopLogger] implements [SecurityLogger].
-var _ SecurityLogger = (*nopLogger)(nil)
+	"github.com/snapcore/snapd/testutil"
+)
 
-// NewNopLogger returns a [SecurityLogger] that silently discards all events.
-func NewNopLogger() SecurityLogger {
-	return nopLogger{}
+type SyscallOps = syscallOps
+
+var NlmsgAlign = nlmsgAlign
+
+const AuditTrustedApp = auditTrustedApp
+
+func AuditWriterBuildMessage(aw *AuditWriter, payload []byte) []byte {
+	return aw.buildMessage(payload)
 }
 
-// LogEvent implements [SecurityLogger.LogEvent].
-func (nopLogger) LogEvent(event Event, description string, attrs ...Attr) {
+func AuditWriterSetSeq(aw *AuditWriter, val uint32) {
+	atomic.StoreUint32(&aw.seq, val)
+}
+
+func MockSyscallOps(ops syscallOps) (restore func()) {
+	return testutil.Mock(&sys, ops)
 }
