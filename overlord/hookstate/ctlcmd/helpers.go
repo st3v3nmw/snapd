@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/snapcore/snapd/client"
 	"github.com/snapcore/snapd/i18n"
 	"github.com/snapcore/snapd/jsonutil"
 	"github.com/snapcore/snapd/overlord/configstate"
@@ -70,6 +71,122 @@ const snapctlDebounceWindow = 200 * time.Millisecond
 // introspect the change for this specific task. Finding this task allows us to
 // properly organize the hook tasks in the chain of tasks in the change.
 const finalSeedTask = "mark-seeded"
+
+// ChangeInfo represents the information about a change that is needed for JSON marshaling.
+type ChangeInfo struct {
+	ID      string     `json:"id"`
+	Kind    string     `json:"kind"`
+	Summary string     `json:"summary"`
+	Status  string     `json:"status"`
+	Tasks   []TaskInfo `json:"tasks,omitempty"`
+	Ready   bool       `json:"ready"`
+	Err     string     `json:"err,omitempty"`
+
+	SpawnTime time.Time  `json:"spawn-time,omitzero"`
+	ReadyTime *time.Time `json:"ready-time,omitempty"`
+
+	Data map[string]*json.RawMessage `json:"data,omitempty"`
+}
+
+// TaskInfo represents the information about a task that is needed for JSON marshaling
+// for `snap tasks` output.
+type TaskInfo struct {
+	ID       string              `json:"id"`
+	Kind     string              `json:"kind"`
+	Summary  string              `json:"summary"`
+	Status   string              `json:"status"`
+	Log      []string            `json:"log,omitempty"`
+	Progress client.TaskProgress `json:"progress"`
+
+	SpawnTime time.Time  `json:"spawn-time,omitzero"`
+	ReadyTime *time.Time `json:"ready-time,omitempty"`
+
+	Data map[string]*json.RawMessage `json:"data,omitempty"`
+}
+
+// StateChangeToChangeInfo converts a state.Change to a ChangeInfo struct which has all
+// the exported fields needed for JSON marshaling for `snap tasks` output. It also extracts
+// the "api-data" from the change and includes it in the ChangeInfo.Data field.
+func StateChangeToChangeInfo(chg *state.Change) *ChangeInfo {
+	status := chg.Status()
+	chgInfo := &ChangeInfo{
+		ID:      chg.ID(),
+		Kind:    chg.Kind(),
+		Summary: chg.Summary(),
+		Status:  status.String(),
+		Ready:   status.Ready(),
+
+		SpawnTime: chg.SpawnTime(),
+	}
+	readyTime := chg.ReadyTime()
+	if !readyTime.IsZero() {
+		chgInfo.ReadyTime = &readyTime
+	}
+	if err := chg.Err(); err != nil {
+		chgInfo.Err = err.Error()
+	}
+
+	tasks := chg.Tasks()
+	taskInfos := make([]TaskInfo, len(tasks))
+	for j, t := range tasks {
+		label, done, total := t.Progress()
+
+		taskInfo := TaskInfo{
+			ID:      t.ID(),
+			Kind:    t.Kind(),
+			Summary: t.Summary(),
+			Status:  t.Status().String(),
+			Log:     t.Log(),
+			Progress: client.TaskProgress{
+				Label: label,
+				Done:  done,
+				Total: total,
+			},
+			SpawnTime: t.SpawnTime(),
+		}
+		readyTime := t.ReadyTime()
+		if !readyTime.IsZero() {
+			taskInfo.ReadyTime = &readyTime
+		}
+		if data, err := taskApiData(t); err == nil {
+			taskInfo.Data = data
+		}
+		taskInfos[j] = taskInfo
+	}
+	chgInfo.Tasks = taskInfos
+
+	var data map[string]*json.RawMessage
+	if chg.Get("api-data", &data) == nil {
+		chgInfo.Data = data
+	}
+
+	return chgInfo
+}
+
+// taskApiData returns a map similar to change data which is currently
+// only filled with affected snap names.
+// Example: {"snap-names": ["snap-1", "snap-2"]}
+//
+// Note: This helper could be extended if needed to allow per-task custom
+// data similar to change "api-data".
+func taskApiData(t *state.Task) (map[string]*json.RawMessage, error) {
+	affectedSnaps, err := snapstate.SnapsAffectedByTask(t)
+	if err != nil {
+		return nil, err
+	}
+	if len(affectedSnaps) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(affectedSnaps)
+	if err != nil {
+		return nil, err
+	}
+	var affected json.RawMessage = raw
+	data := map[string]*json.RawMessage{
+		"affected-snaps": &affected,
+	}
+	return data, nil
+}
 
 func currentSnapInfo(st *state.State, snapInstance string) (*snap.Info, error) {
 	var snapst snapstate.SnapState
