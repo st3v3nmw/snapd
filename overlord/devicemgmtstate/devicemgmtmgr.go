@@ -66,6 +66,10 @@ type MessageHandler interface {
 	Validate(st *state.State, msg *RequestMessage) error
 
 	// Apply processes a request-message and returns a change ID.
+	// Implementations must not release the lock internally. Doing so
+	// writes state to disk mid-Apply, saving the change without ApplyChangeID.
+	// If snapd then restarts before the task completes, this method will be called again.
+	// If the lock must be released internally, this method must be idempotent.
 	Apply(st *state.State, msg *RequestMessage) (changeID string, err error)
 
 	// BuildResponse converts a completed change into a response body and status.
@@ -538,13 +542,12 @@ func (m *DeviceMgmtManager) doApplyMessage(t *state.Task, _ *tomb.Tomb) error {
 		return nil
 	}
 
+	defer m.setState(ms)
+
 	handler, ok := m.handlers[msg.Kind]
 	if !ok {
 		msg.Status = asserts.MessageStatusError
 		msg.Error = fmt.Sprintf("cannot find handler for message kind %q", msg.Kind)
-
-		m.setState(ms)
-
 		return nil
 	}
 
@@ -555,8 +558,6 @@ func (m *DeviceMgmtManager) doApplyMessage(t *state.Task, _ *tomb.Tomb) error {
 	} else {
 		msg.ApplyChangeID = chgID
 	}
-
-	m.setState(ms)
 
 	return nil
 }

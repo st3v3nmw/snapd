@@ -541,8 +541,7 @@ func (s *deviceMgmtMgrSuite) TestDoExchangeMessagesDeviceNotSeeded(c *C) {
 	s.st.Set("seeded", false)
 
 	s.mockStore(func(ctx context.Context, req *store.MessageExchangeRequest) (*store.MessageExchangeResponse, error) {
-		c.Log("call not expected")
-		c.Fail()
+		c.Fatal("call not expected")
 
 		return nil, fmt.Errorf("call not expected")
 	})
@@ -1052,8 +1051,7 @@ func (s *deviceMgmtMgrSuite) TestDoApplyMessageSkipIfAlreadyFailed(c *C) {
 
 	s.mgr.MockHandler("test-kind", &mockMessageHandler{
 		apply: func(*state.State, *devicemgmtstate.RequestMessage) (string, error) {
-			c.Log("apply call not expected for already-failed message")
-			c.Fail()
+			c.Fatal("apply call not expected for already-failed message")
 
 			return "", fmt.Errorf("call not expected")
 		},
