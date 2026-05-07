@@ -1,3 +1,4 @@
+# spread-variant=plus
 project: snapd
 
 environment:
@@ -272,8 +273,6 @@ backends:
                   storage: preserve-size
                   image: centos-9-64
 
-            - opensuse-15.6-64:
-                  workers: 6
             - opensuse-16.0-64:
                   workers: 6
             - opensuse-tumbleweed-64:
@@ -449,9 +448,6 @@ backends:
                   image: snapd-spread/fedora-42-64
                   workers: 12
 
-            - opensuse-15.6-64:
-                image: snapd-spread/opensuse-15.6-64
-                workers: 6
             - opensuse-16.0-64:
                 image: snapd-spread/opensuse-16.0-64
                 workers: 6
@@ -755,29 +751,23 @@ backends:
             exec image-garden discard "$SPREAD_SYSTEM_ADDRESS"
         systems:
             - ubuntu-core-16-64:
-                  image: ubuntu-16.04-64
                   username: root
                   password: root
                   # Disable due to ENOSPC.
                   manual: true
             - ubuntu-core-18-64:
-                  image: ubuntu-18.04-64
                   username: root
                   password: root
             - ubuntu-core-20-64:
-                  image: ubuntu-20.04-64
                   username: root
                   password: root
             - ubuntu-core-22-64:
-                  image: ubuntu-22.04-64
                   username: root
                   password: root
             - ubuntu-core-24-64:
-                  image: ubuntu-24.04-64
                   username: root
                   password: root
             - ubuntu-core-26-64:
-                  image: ubuntu-26.04-64
                   username: root
                   password: root
             - ubuntu-16.04-64:
@@ -1452,18 +1442,20 @@ prepare: |
     # major differences:
     # - map keys are sorted by default
     # - with --yaml-input, can parse YAML
-    if os.query is-arm64; then
-        "$TESTSTOOLS"/simpleget -o /tmp/gojq.tar.gz \
-            https://github.com/itchyny/gojq/releases/download/v0.12.16/gojq_v0.12.16_linux_arm64.tar.gz
-    elif os.query is-arm; then
-        # upstream does not provide prebuilt binaries for armhf
-        # built with: GOARCH=arm GOARM=7
-        "$TESTSTOOLS"/simpleget -o /tmp/gojq.tar.gz \
-            https://storage.googleapis.com/snapd-spread-tests/dependencies/gojq_v0.12.16_linux_armhf.tar.gz
-    else
-        # must be amd64
-        "$TESTSTOOLS"/simpleget -o /tmp/gojq.tar.gz \
-            https://github.com/itchyny/gojq/releases/download/v0.12.16/gojq_v0.12.16_linux_amd64.tar.gz
+    if [ ! -e /tmp/gojq.tar.gz ]; then
+        if os.query is-arm64; then
+            "$TESTSTOOLS"/simpleget -o /tmp/gojq.tar.gz \
+                https://github.com/itchyny/gojq/releases/download/v0.12.16/gojq_v0.12.16_linux_arm64.tar.gz
+        elif os.query is-arm; then
+            # upstream does not provide prebuilt binaries for armhf
+            # built with: GOARCH=arm GOARM=7
+            "$TESTSTOOLS"/simpleget -o /tmp/gojq.tar.gz \
+                https://storage.googleapis.com/snapd-spread-tests/dependencies/gojq_v0.12.16_linux_armhf.tar.gz
+        else
+            # must be amd64
+            "$TESTSTOOLS"/simpleget -o /tmp/gojq.tar.gz \
+                https://github.com/itchyny/gojq/releases/download/v0.12.16/gojq_v0.12.16_linux_amd64.tar.gz
+        fi
     fi
 
     (
@@ -1486,8 +1478,9 @@ restore-each: |
 suites:
     tests/lib/tools/suite/:
         summary: Tests for tests/lib/tools tools
-        backends: [google, qemu]
+        backends: [google, qemu, garden]
         prepare-each: |
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
             "$TESTSLIB"/prepare-restore.sh --prepare-suite-each-minimal-no-snaps
         restore-each: |
             "$TESTSLIB"/prepare-restore.sh --restore-suite-each-minimal-no-snaps
@@ -1495,6 +1488,7 @@ suites:
         summary: Test building snapd in different architectures
         manual: true
         prepare-each: |
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
             "$TESTSLIB"/prepare-restore.sh --prepare-suite-each-minimal-no-snaps
         restore-each: |
             "$TESTSLIB"/prepare-restore.sh --restore-suite-each-minimal-no-snaps
@@ -1585,6 +1579,19 @@ suites:
         restore: |
             "$TESTSLIB"/prepare-restore.sh --restore-suite
 
+    tests/release/:
+        summary: Tests for snapd during the release process
+        systems: [ubuntu-1*, ubuntu-2*]
+        environment:
+            CORE_CHANNEL: stable
+        prepare: |
+            "$TESTSLIB"/prepare-restore.sh --prepare-suite
+        prepare-each: |
+            "$TESTSLIB"/prepare-restore.sh --prepare-suite-each
+        # This suite does not have restore steps due to the destructive
+        # nature of its tests that will cause the vanila restore scripts to
+        # fail. The tests in this suite are all meant to be run in isolation.
+
     tests/upgrade/:
         summary: Tests for snapd upgrade
         # Test cases are not yet ported to openSUSE that is why we keep
@@ -1628,6 +1635,7 @@ suites:
             #shellcheck source=tests/lib/prepare.sh
             . "$TESTSLIB"/prepare.sh
             prepare_classic
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
         prepare-each: |
             "$TESTSLIB"/reset.sh --reuse-core
             #shellcheck source=tests/lib/prepare.sh
@@ -1771,6 +1779,7 @@ suites:
                 . "$TESTSLIB"/core-initrd.sh
                 build_and_install_initramfs_deb
             fi
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
 
         prepare-each: |
             "$TESTSLIB"/prepare-restore.sh --prepare-suite-each
@@ -1839,6 +1848,7 @@ suites:
 
             tests.nested prepare
             tests.nested build-image classic
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
         prepare-each: |
             "$TESTSLIB"/prepare-restore.sh --prepare-suite-each
             tests.nested create-vm classic
@@ -1912,6 +1922,7 @@ suites:
 
             tests.nested prepare
             tests.nested build-image core
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
         prepare-each: |
             "$TESTSLIB"/prepare-restore.sh --prepare-suite-each
             tests.nested create-vm core
@@ -1985,6 +1996,7 @@ suites:
 
             tests.nested prepare
             tests.nested build-image core
+            tests.invariant set snap-mount-dir "$(os.paths snap-mount-dir)"
         prepare-each: |
             "$TESTSLIB"/prepare-restore.sh --prepare-suite-each
             tests.nested create-vm core --param-cpus "$NESTED_CPUS" --param-mem "$NESTED_MEM"

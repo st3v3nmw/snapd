@@ -49,7 +49,7 @@ Build dependencies can automatically be resolved using `build-dep` on Ubuntu:
 
     cd ~/snapd
     ln -sfn packaging/ubuntu-16.04 debian
-    sudo apt build-dep .
+    sudo apt build-dep -y .
 
 > [!NOTE]
 > The `debian` symbolic link is intentionally not part of the tree, and is explicitly listed in the .gitignore file.
@@ -346,6 +346,8 @@ To install `image-garden` as a snap run `sudo snap install image-garden`. To
 use the bundled copy of spread from image-garden separately run `sudo snap
 alias image-garden.spread spread`. As running spread tests in snapd requires
 spread-plus, additionally set `snap set image-garden spread-variant=plus`.
+Up-to-date versions of image-garden snap automatically detect the right version
+of spread to use, so this may not be necessary.
 
 #### Running spread
 
