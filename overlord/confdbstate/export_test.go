@@ -19,6 +19,7 @@
 package confdbstate
 
 import (
+	"context"
 	"time"
 
 	"github.com/snapcore/snapd/confdb"
@@ -43,6 +44,8 @@ type (
 	Access             = access
 	AccessType         = accessType
 )
+
+type ConfdbMessageHandler = confdbMessageHandler
 
 func ChangeViewHandlerGenerator(ctx *hookstate.Context) hookstate.Handler {
 	return &changeViewHandler{ctx: ctx}
@@ -93,4 +96,16 @@ func GetOngoingTxs(st *state.State, account, schemaName string) (ongoingTxs *con
 
 func MockFetchConfdbSchemaAssertion(f func(*state.State, int, string, string) error) func() {
 	return testutil.Mock(&assertstateFetchConfdbSchemaAssertion, f)
+}
+
+func MockConfdbstateGetView(f func(*state.State, string, string, string) (*confdb.View, error)) func() {
+	return testutil.Mock(&confdbstateGetView, f)
+}
+
+func MockConfdbstateReadConfdb(f func(context.Context, *state.State, *confdb.View, []string, map[string]any, confdb.Access) (string, error)) func() {
+	return testutil.Mock(&confdbstateReadConfdb, f)
+}
+
+func MockConfdbstateWriteConfdb(f func(context.Context, *state.State, *confdb.View, map[string]any) (string, error)) func() {
+	return testutil.Mock(&confdbstateWriteConfdb, f)
 }

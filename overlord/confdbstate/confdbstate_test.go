@@ -20,6 +20,7 @@ package confdbstate_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ import (
 	"github.com/snapcore/snapd/overlord/assertstate/assertstatetest"
 	"github.com/snapcore/snapd/overlord/confdbstate"
 	"github.com/snapcore/snapd/overlord/configstate/config"
+	"github.com/snapcore/snapd/overlord/devicemgmtstate"
 	"github.com/snapcore/snapd/overlord/hookstate"
 	"github.com/snapcore/snapd/overlord/hookstate/hooktest"
 	"github.com/snapcore/snapd/overlord/ifacestate/ifacerepo"
@@ -84,7 +86,7 @@ func (s *confdbTestSuite) SetUpTest(c *C) {
 	s.o.AddManager(hookMgr)
 
 	// to test the confdbManager
-	mgr := confdbstate.Manager(s.state, hookMgr, runner)
+	mgr := confdbstate.Manager(s.state, hookMgr, runner, devicemgmtstate.Manager(s.state, runner, nil))
 	s.o.AddManager(mgr)
 
 	storeSigning := assertstest.NewStoreStack("can0nical", nil)
@@ -3223,5 +3225,23 @@ func (s *confdbTestSuite) TestAPIBlockingAccessTimedOutRacesWithUnblock(c *C) {
 	case <-waitChan:
 	case <-time.After(testutil.HostScaledTimeout(2 * time.Second)):
 		c.Fatal("expected access to block but timed out")
+	}
+}
+
+func (s *confdbTestSuite) TestToErrorKind(c *C) {
+	type test struct {
+		err      error
+		expected client.ErrorKind
+	}
+	tests := []test{
+		{&asserts.NotFoundError{Type: asserts.ConfdbSchemaType}, client.ErrorKindAssertionNotFound},
+		{&confdbstate.NoViewError{}, client.ErrorKindOptionNotAvailable},
+		{&confdb.NoMatchError{}, client.ErrorKindOptionNotAvailable},
+		{&confdb.NoDataError{}, client.ErrorKindConfigNoSuchOption},
+		{errors.New("some other error"), ""},
+	}
+
+	for _, tt := range tests {
+		c.Check(confdbstate.ToErrorKind(tt.err), Equals, tt.expected)
 	}
 }
