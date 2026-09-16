@@ -120,7 +120,7 @@ func (s *confdbHandlerSuite) TestValidateOK(c *C) {
 		confdbControl: func() (*asserts.ConfdbControl, error) { return cc, nil },
 	})
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		AccountID:   "alice",
 		AuthorityID: "alice",
 		Kind:        "confdb",
@@ -151,7 +151,7 @@ func (s *confdbHandlerSuite) TestValidateFeatureDisabled(c *C) {
 
 		setFeatureFlag(c, s.st, t.feature, false)
 
-		err := handler.Validate(context.Background(), s.st, &devicemgmthandlers.RequestMessage{})
+		err := handler.Validate(context.Background(), s.st, devicemgmthandlers.RequestMessage{})
 		c.Check(err, ErrorMatches, expectedErr, cmt)
 
 		var authErr *devicemgmthandlers.UnauthorizedError
@@ -176,7 +176,7 @@ func (s *confdbHandlerSuite) TestValidateMismatchedAuthority(c *C) {
 		confdbControl: func() (*asserts.ConfdbControl, error) { return cc, nil },
 	})
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		AccountID:   "alice",
 		AuthorityID: "mallory",
 		Kind:        "confdb",
@@ -199,7 +199,7 @@ func (s *confdbHandlerSuite) TestValidateUnauthorized(c *C) {
 		confdbControl: func() (*asserts.ConfdbControl, error) { return cc, nil },
 	})
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		AccountID:   "alice",
 		AuthorityID: "alice",
 		Kind:        "confdb",
@@ -223,7 +223,7 @@ func (s *confdbHandlerSuite) TestValidateNoConfdbControl(c *C) {
 		},
 	})
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		AccountID:   "alice",
 		AuthorityID: "alice",
 		Kind:        "confdb",
@@ -298,7 +298,7 @@ func (s *confdbHandlerSuite) TestValidateInvalidBody(c *C) {
 	for _, tt := range tests {
 		cmt := Commentf("%s test", tt.name)
 
-		msg := &devicemgmthandlers.RequestMessage{AccountID: "alice", Kind: "confdb", Body: tt.body}
+		msg := devicemgmthandlers.RequestMessage{AccountID: "alice", Kind: "confdb", Body: tt.body}
 		err := handler.Validate(context.Background(), s.st, msg)
 		c.Assert(err, NotNil, cmt)
 		c.Check(err, ErrorMatches, tt.expectedErr, cmt)
@@ -333,7 +333,7 @@ func (s *confdbHandlerSuite) TestApplyGetOK(c *C) {
 	})
 	defer restore()
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		AccountID: "operator",
 		BaseID:    "msg-1",
 		Kind:      "confdb",
@@ -371,7 +371,7 @@ func (s *confdbHandlerSuite) TestApplySetOK(c *C) {
 	})
 	defer restore()
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		AccountID: "operator",
 		BaseID:    "msg-2",
 		Kind:      "confdb",
@@ -422,7 +422,7 @@ func (s *confdbHandlerSuite) TestApplyInvalidBody(c *C) {
 	for _, tt := range tests {
 		cmt := Commentf("%s test", tt.name)
 
-		msg := &devicemgmthandlers.RequestMessage{Kind: "confdb", Body: tt.body}
+		msg := devicemgmthandlers.RequestMessage{Kind: "confdb", Body: tt.body}
 
 		chgID, err := handler.Apply(context.Background(), s.st, msg)
 		c.Assert(err, NotNil, cmt)
@@ -442,7 +442,7 @@ func (s *confdbHandlerSuite) TestApplyGetViewError(c *C) {
 	})
 	defer restore()
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		Kind: "confdb",
 		Body: `{"action":"get","account":"system","view":"network/wifi-who"}`,
 	}
@@ -468,7 +468,7 @@ func (s *confdbHandlerSuite) TestApplyWriteConfdbError(c *C) {
 	})
 	defer restore()
 
-	msg := &devicemgmthandlers.RequestMessage{
+	msg := devicemgmthandlers.RequestMessage{
 		Kind: "confdb",
 		Body: `{"action":"set","account":"system","view":"network/wifi-admin","values":{"ssid":"my-network"}}`,
 	}

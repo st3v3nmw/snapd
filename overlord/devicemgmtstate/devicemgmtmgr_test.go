@@ -86,12 +86,12 @@ func (m *mockDeviceBackend) SignResponseMessage(accountID, messageID string, sta
 }
 
 type mockMessageHandler struct {
-	validate         func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) error
-	apply            func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error)
+	validate         func(ctx context.Context, st *state.State, msg handlers.RequestMessage) error
+	apply            func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error)
 	resultFromChange func(ctx context.Context, chg *state.Change) (map[string]any, error)
 }
 
-func (h *mockMessageHandler) Validate(ctx context.Context, st *state.State, msg *handlers.RequestMessage) error {
+func (h *mockMessageHandler) Validate(ctx context.Context, st *state.State, msg handlers.RequestMessage) error {
 	if h.validate != nil {
 		return h.validate(ctx, st, msg)
 	}
@@ -99,7 +99,7 @@ func (h *mockMessageHandler) Validate(ctx context.Context, st *state.State, msg 
 	return nil
 }
 
-func (h *mockMessageHandler) Apply(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+func (h *mockMessageHandler) Apply(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 	if h.apply != nil {
 		return h.apply(ctx, st, msg)
 	}
@@ -188,10 +188,10 @@ func (s *deviceMgmtMgrSuite) SetUpTest(c *C) {
 	})
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		validate: func(context.Context, *state.State, *handlers.RequestMessage) error {
+		validate: func(context.Context, *state.State, handlers.RequestMessage) error {
 			return nil
 		},
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			chg := s.newSubsystemChange(st, msg, func(t *state.Task) {
 				t.SetStatus(state.DoneStatus)
 			})
@@ -312,7 +312,7 @@ func (s *deviceMgmtMgrSuite) makeResponseMessage(accountID, messageID string, st
 	}).(*asserts.ResponseMessage), nil
 }
 
-func (s *deviceMgmtMgrSuite) newSubsystemChange(st *state.State, msg *handlers.RequestMessage, setTaskState func(t *state.Task)) *state.Change {
+func (s *deviceMgmtMgrSuite) newSubsystemChange(st *state.State, msg handlers.RequestMessage, setTaskState func(t *state.Task)) *state.Change {
 	chg := st.NewChange("subsystem", "apply payload")
 	handlers.MarkChangeForMessage(chg, msg)
 
@@ -1584,7 +1584,7 @@ func (s *deviceMgmtMgrSuite) TestDoValidateMessageUnauthorized(c *C) {
 	})
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		validate: func(context.Context, *state.State, *handlers.RequestMessage) error {
+		validate: func(context.Context, *state.State, handlers.RequestMessage) error {
 			return &handlers.UnauthorizedError{Operator: "alice"}
 		},
 	})
@@ -1614,7 +1614,7 @@ func (s *deviceMgmtMgrSuite) TestDoValidateMessageHandlerError(c *C) {
 	})
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		validate: func(context.Context, *state.State, *handlers.RequestMessage) error {
+		validate: func(context.Context, *state.State, handlers.RequestMessage) error {
 			return fmt.Errorf("cannot validate message: invalid payload")
 		},
 	})
@@ -1643,7 +1643,7 @@ func (s *deviceMgmtMgrSuite) TestDoValidateMessageIdempotent(c *C) {
 
 	validateCalls := 0
 	handlers.Register("test-kind", &mockMessageHandler{
-		validate: func(context.Context, *state.State, *handlers.RequestMessage) error {
+		validate: func(context.Context, *state.State, handlers.RequestMessage) error {
 			validateCalls++
 			return fmt.Errorf("cannot validate message: invalid payload")
 		},
@@ -1741,7 +1741,7 @@ func (s *deviceMgmtMgrSuite) TestDoValidateMessageConcurrentWriteAfterValidate(c
 
 	firstCall := true
 	handlers.Register("test-kind", &mockMessageHandler{
-		validate: func(ctx context.Context, st *state.State, _ *handlers.RequestMessage) error {
+		validate: func(ctx context.Context, st *state.State, _ handlers.RequestMessage) error {
 			if firstCall {
 				firstCall = false
 				// Wait for the other lane's full write before resuming.
@@ -1837,7 +1837,7 @@ func (s *deviceMgmtMgrSuite) TestDoApplyMessageSkipIfAlreadyFailed(c *C) {
 	}, nil)
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(context.Context, *state.State, *handlers.RequestMessage) (string, error) {
+		apply: func(context.Context, *state.State, handlers.RequestMessage) (string, error) {
 			c.Error("apply call not expected for already-failed message")
 			return "", nil
 		},
@@ -1900,7 +1900,7 @@ func (s *deviceMgmtMgrSuite) TestDoApplyMessageApplyError(c *C) {
 	})
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			return "", fmt.Errorf("cannot apply message: system in inconsistent state")
 		},
 	})
@@ -1924,7 +1924,7 @@ func (s *deviceMgmtMgrSuite) TestDoApplyMessageIdempotent(c *C) {
 
 	applyCalls := 0
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			applyCalls++
 			chg := st.NewChange("subsystem", "apply payload")
 			handlers.MarkChangeForMessage(chg, msg)
@@ -1986,10 +1986,10 @@ func (s *deviceMgmtMgrSuite) TestDoApplyMessageRecoverExistingChange(c *C) {
 
 	// Simulate a change that was created and marked before the crash.
 	existingChg := s.st.NewChange("subsystem", "apply payload")
-	handlers.MarkChangeForMessage(existingChg, ms.Sequences["operator/msg1"].Messages[0])
+	handlers.MarkChangeForMessage(existingChg, *ms.Sequences["operator/msg1"].Messages[0])
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(context.Context, *state.State, *handlers.RequestMessage) (string, error) {
+		apply: func(context.Context, *state.State, handlers.RequestMessage) (string, error) {
 			c.Error("apply must not be called when a marked change already exists")
 			return "", nil
 		},
@@ -2075,7 +2075,7 @@ func (s *deviceMgmtMgrSuite) TestDoApplyMessageConcurrentWriteAfterApply(c *C) {
 
 	firstCall := true
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			if firstCall {
 				firstCall = false
 				// Wait for the other lane's full write before resuming.
@@ -2208,7 +2208,7 @@ func (s *deviceMgmtMgrSuite) TestDoQueueResponseStatusAlreadyKnown(c *C) {
 	}, nil)
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(context.Context, *state.State, *handlers.RequestMessage) (string, error) {
+		apply: func(context.Context, *state.State, handlers.RequestMessage) (string, error) {
 			c.Error("apply must not be called when ResponseStatus is already set")
 			return "", nil
 		},
@@ -2302,7 +2302,7 @@ func (s *deviceMgmtMgrSuite) TestDoQueueResponseResultFromChangeError(c *C) {
 	})
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			chg := s.newSubsystemChange(st, msg, func(t *state.Task) {
 				t.SetStatus(state.DoneStatus)
 			})
@@ -2412,7 +2412,7 @@ func (s *deviceMgmtMgrSuite) TestDoQueueResponseSubsystemChangeError(c *C) {
 		})
 
 		handlers.Register("test-kind", &mockMessageHandler{
-			apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+			apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 				chg := s.newSubsystemChange(st, msg, tt.setTaskState)
 				return chg.ID(), nil
 			},
@@ -2605,7 +2605,7 @@ func (s *deviceMgmtMgrSuite) TestDoQueueResponseConcurrentWriteAfterResultFromCh
 
 	firstCall := true
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			chg := s.newSubsystemChange(st, msg, func(t *state.Task) {
 				t.SetStatus(state.DoneStatus)
 			})
@@ -2659,7 +2659,7 @@ func (s *deviceMgmtMgrSuite) TestDoQueueResponseRejectedSequenceEvicted(c *C) {
 	})
 
 	handlers.Register("test-kind", &mockMessageHandler{
-		validate: func(_ context.Context, _ *state.State, msg *handlers.RequestMessage) error {
+		validate: func(_ context.Context, _ *state.State, msg handlers.RequestMessage) error {
 			// The second message is rejected mid-pipeline.
 			if msg.SeqNum == 2 {
 				return fmt.Errorf("cannot validate message")
@@ -2667,7 +2667,7 @@ func (s *deviceMgmtMgrSuite) TestDoQueueResponseRejectedSequenceEvicted(c *C) {
 
 			return nil
 		},
-		apply: func(_ context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(_ context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			chg := s.newSubsystemChange(st, msg, func(t *state.Task) {
 				t.SetStatus(state.DoneStatus)
 			})
@@ -2735,7 +2735,7 @@ func (s *deviceMgmtMgrSuite) TestMessagesWithSameIDFromDifferentAccounts(c *C) {
 
 	applied := make(map[string]int)
 	handlers.Register("test-kind", &mockMessageHandler{
-		apply: func(ctx context.Context, st *state.State, msg *handlers.RequestMessage) (string, error) {
+		apply: func(ctx context.Context, st *state.State, msg handlers.RequestMessage) (string, error) {
 			applied[msg.Key()]++
 			chg := s.newSubsystemChange(st, msg, func(t *state.Task) {
 				t.SetStatus(state.DoneStatus)
@@ -2823,7 +2823,7 @@ func (s *deviceMgmtMgrSuite) TestFindChangeByMgmtMessageKey(c *C) {
 	s.st.Lock()
 	defer s.st.Unlock()
 
-	msg := &handlers.RequestMessage{AccountID: "operator", BaseID: "msg1"}
+	msg := handlers.RequestMessage{AccountID: "operator", BaseID: "msg1"}
 
 	chg := s.st.NewChange("subsystem", "apply payload")
 	handlers.MarkChangeForMessage(chg, msg)

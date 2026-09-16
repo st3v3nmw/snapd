@@ -18,10 +18,7 @@
  */
 
 // Package devicemgmtstate implements the manager and state aspects responsible
-// for message-based remote device management. It receives signed request-message
-// assertions from the store via periodic message exchanges, validates them against
-// SD187 requirements, dispatches them to subsystem-specific handlers (like confdb),
-// and sends back response-message assertions with processing results.
+// for remote device management.
 package devicemgmtstate
 
 import (
@@ -214,6 +211,7 @@ func (ms *deviceMgmtState) enqueueRequestMessages(pollResp *store.MessageExchang
 		ms.LastReceivedToken = ""
 	}
 
+	// The responses in this batch were sent during the exchange, so clear them.
 	ms.ReadyResponses = make(map[string]store.Message)
 }
 
@@ -232,6 +230,89 @@ func (ms *deviceMgmtState) evictSequence(seqKey string) {
 	delete(ms.Sequences, seqKey)
 	ms.removeSequenceFromLRU(seqKey)
 }
+
+/* The life of a request message.
+
+   This diagram follows message N of a sequence. An unsequenced message
+   follows the same path on its own: it waits on no earlier message, and no
+   later message waits on it.
+
+   The names on the right are the tasks that handle each step. The names
+   in brackets are the asserts.MessageStatus the message ends up with.
+
+   Received                                     <- exchange-mgmt-messages
+     |  \
+     |   \ Malformed, duplicate, or message N
+     |     already applied --> discarded, no response
+     V
+   Queued in sequence
+     |
+     V
+   Message N-1 applied or dispatched?           <- dispatch-mgmt-messages
+     |  \
+     |   \ No --> Not dispatched
+     |               |
+     | Yes           | Too many messages blocked,
+     |               | or too many sequences in cache?
+     |               |  \
+     |               |   \ No --> Retried on the next dispatch
+     |               |
+     |               | Yes
+     |               V
+     |        Sequence rejected
+     |               |
+     |               V
+     |        Message N first still pending?
+     |               |  \
+     |               |   \ No --> discarded, no response
+     |               |
+     |               | Yes
+     |               V
+     |            [rejected] ------------->\
+     V                                     |
+   Dispatched                              |
+     |                                     |
+     V                                     |
+   Valid and authorized?                   |    <- validate-mgmt-message
+     |  \                                  |
+     |   \ No --> [rejected] or            |
+     |            [unauthorized] --------->|
+     | Yes                                 |
+     V                                     |
+   Subsystem change created?               |    <- apply-mgmt-message
+     |  \                                  |
+     |   \ No --> [error] ---------------->|
+     |                                     |
+     | Yes                                 |
+     V                                     |
+   Subsystem change successful?            |    <- queue-mgmt-response
+     |  \                                  |
+     |   \ No --> [error] ---------------->|
+     |                                     |
+     | Yes                                 |
+     V                                     |
+   [success] ----------------------------->|
+                                           |
+     /-------------------------------------/
+     |
+     V
+   Response signed and queued
+     |
+     V
+   [success]?
+     |  \
+     |   \ No --> Sequence evicted,
+     |            tasks for messages N+1 onward aborted
+     | Yes                       |
+     V                           |
+   Message removed from state <--/
+     |
+     V
+   Response sent on the next exchange           <- exchange-mgmt-messages
+
+   Eviction aborts the tasks of later messages already dispatched from the same
+   sequence, which is what stops message N+1 from applying once N has failed.
+*/
 
 // DeviceMgmtManager handles device management operations.
 type DeviceMgmtManager struct {
@@ -360,6 +441,24 @@ func (m *DeviceMgmtManager) shouldExchangeMessages(ms *deviceMgmtState) bool {
 
 // doExchangeMessages exchanges messages with the store: sends queued response messages,
 // acknowledges receipt of persisted request messages, and fetches new request messages.
+//
+// The store maintains a queue of request messages for the device. In each
+// exchange, the after field carries the token of the last message the device
+// stored, acknowledging every message up to and including it. A message stays
+// queued until a later exchange acks it, so one lost to a crash is resent.
+//
+// For instance:
+//
+//	Exchange 1  -->  after "", limit 10, no response messages
+//	            <--  Two request messages with tokenA and tokenB
+//	                 both stored, but they stay queued until acked
+//
+//	Exchange 2  -->  after tokenB, limit 10, response messages
+//	            <--  No request messages
+//	                 tokenA and tokenB are dropped from the queue, and
+//	                 nothing new arrived, so there is nothing left to ack
+//
+//	Exchange 3  -->  after "", limit 10, ...
 func (m *DeviceMgmtManager) doExchangeMessages(t *state.Task, tomb *tomb.Tomb) error {
 	m.state.Lock()
 	defer m.state.Unlock()
@@ -407,6 +506,30 @@ func (m *DeviceMgmtManager) doExchangeMessages(t *state.Task, tomb *tomb.Tomb) e
 }
 
 // doDispatchMessages selects pending requests for processing and queues tasks for them.
+//
+// One chain is built per sequence, so sequences run independently, while the
+// messages inside a sequence run in order. Each message's three tasks get
+// their own lane, so a failing task aborts that message and the ones after it.
+//
+// For instance:
+//
+//	dispatch-mgmt-messages
+//	   |
+//	   |--> validate --> apply --> queue-response ---\  Message N          [lane 1]
+//	   |                                             |
+//	   |    /----------------------------------------/
+//	   |    V
+//	   |    validate --> apply --> queue-response ---\  Message N+1        [lane 2]
+//	   |                                             |
+//	   |    /----------------------------------------/
+//	   |    V
+//	   |    validate --> apply --> queue-response       Message N+2        [lane 3]
+//	   |
+//	   |--> validate --> apply --> queue-response       Other sequence     [lane 4]
+//	   |
+//	   |--> validate --> apply --> queue-response       Unsequenced        [lane 5]
+//	   |
+//	   \--> queue-response                              Rejected sequence  [lane 6]
 func (m *DeviceMgmtManager) doDispatchMessages(t *state.Task, _ *tomb.Tomb) error {
 	m.state.Lock()
 	defer m.state.Unlock()
@@ -633,7 +756,7 @@ func (m *DeviceMgmtManager) doValidateMessage(t *state.Task, tomb *tomb.Tomb) er
 		return nil
 	}
 
-	err = handler.Validate(tomb.Context(nil), m.state, msg)
+	err = handler.Validate(tomb.Context(nil), m.state, *msg)
 	if err != nil {
 		var unauthorizedErr *handlers.UnauthorizedError
 		status := asserts.MessageStatusRejected
@@ -715,7 +838,7 @@ func (m *DeviceMgmtManager) doApplyMessage(t *state.Task, tomb *tomb.Tomb) error
 	// TODO: If a shutdown terminates this context while we're waiting for
 	// another op to complete, we'll error out of this call and mark the
 	// message as failed. It would make sense to retry this task instead.
-	chgID, applyErr := handler.Apply(tomb.Context(nil), m.state, msg)
+	chgID, applyErr := handler.Apply(tomb.Context(nil), m.state, *msg)
 
 	// handler.Apply may drop the state lock internally. Concurrent tasks in
 	// other lanes may have mutated the state in that window, so re-read before mutating.
@@ -736,7 +859,7 @@ func (m *DeviceMgmtManager) doApplyMessage(t *state.Task, tomb *tomb.Tomb) error
 }
 
 // doQueueResponse builds a response, signs it, and queues it for transmission on the next exchange.
-// Retries until the subsystem change (if any) completes.
+// Retries until the subsystem change completes.
 func (m *DeviceMgmtManager) doQueueResponse(t *state.Task, tomb *tomb.Tomb) error {
 	m.state.Lock()
 	defer m.state.Unlock()

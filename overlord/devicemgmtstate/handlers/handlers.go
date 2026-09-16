@@ -49,7 +49,7 @@ type RequestMessage struct {
 	ReceiveTime time.Time `json:"receive-time"`
 	Dispatched  bool      `json:"dispatched"`
 
-	// ApplyChangeID is set when Apply schedules async work.
+	// ApplyChangeID is the ID of the subsystem change created by Apply.
 	ApplyChangeID string `json:"apply-change-id,omitempty"`
 
 	// ResponseStatus and ResponseBody hold the final processing outcome.
@@ -99,19 +99,27 @@ func (msg *RequestMessage) Targets(devID asserts.DeviceID) bool {
 
 // MessageHandler processes request messages of a specific kind.
 //
-// Implementations are always invoked with the state lock held. They are free
-// to drop and reacquire the state lock internally (e.g. around slow I/O), but
-// must always return with the state lock held.
+// Each method is invoked with the state lock held. It may drop and reacquire the
+// lock internally (e.g. around slow I/O), but must return with the lock held.
+//
+// Errors returned by these methods reach the operator verbatim in the response
+// message body, so they must read as complete "cannot ..." messages.
 type MessageHandler interface {
-	// Validate checks subsystem-specific constraints.
-	Validate(ctx context.Context, st *state.State, msg *RequestMessage) error
+	// Validate checks subsystem-specific constraints on a message that has
+	// already passed snapd's own validation.
+	// An error results in the rejected status, or the unauthorized status if
+	// it is an UnauthorizedError.
+	Validate(ctx context.Context, st *state.State, msg RequestMessage) error
 
-	// Apply creates a change to process the message and returns its ID.
-	// Implementations must call MarkChangeForMessage on the created change before
-	// releasing the state lock.
-	Apply(ctx context.Context, st *state.State, msg *RequestMessage) (changeID string, err error)
+	// Apply creates a subsystem change to process the message and returns its
+	// change ID. It must call MarkChangeForMessage on the change before
+	// returning or releasing the state lock.
+	// An error results in the error status.
+	Apply(ctx context.Context, st *state.State, msg RequestMessage) (changeID string, err error)
 
-	// ResultFromChange reads the completed change and returns the full result.
+	// ResultFromChange reads the change once it is done and returns the full
+	// result, which becomes the response message body.
+	// An error results in the error status.
 	ResultFromChange(ctx context.Context, chg *state.Change) (body map[string]any, err error)
 }
 
@@ -127,11 +135,11 @@ func (e *UnauthorizedError) Error() string {
 
 const changeMarkerKey = "mgmt-message-key"
 
-// MarkChangeForMessage records the message key on the change created by an Apply
-// implementation. It must be called after change creation and before releasing
-// the state lock, so that doApplyMessage can recover the change ID on retry
-// and not call the handler's Apply again.
-func MarkChangeForMessage(chg *state.Change, msg *RequestMessage) {
+// MarkChangeForMessage records the message key on the change Apply created. It
+// must be called after the change is created and before Apply returns or
+// releases the state lock, so that the apply task can recover the change ID on
+// retry instead of calling Apply again.
+func MarkChangeForMessage(chg *state.Change, msg RequestMessage) {
 	chg.Set(changeMarkerKey, msg.Key())
 }
 
